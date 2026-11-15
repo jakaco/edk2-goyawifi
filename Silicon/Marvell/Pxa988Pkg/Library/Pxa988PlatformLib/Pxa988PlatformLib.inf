@@ -1,0 +1,45 @@
+## @file
+#  ArmPlatformLib for Marvell PXA988 boards chain-loaded by a vendor
+#  bootloader (DRAM, PLLs, PMIC and display already set up).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Pxa988PlatformLib
+  FILE_GUID                      = 6e2a4c18-3b7d-4a9f-8c51-2d0e9b7f4a63
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = ArmPlatformLib
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+  ArmPlatformPkg/ArmPlatformPkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  ArmLib
+  DebugLib
+  IoLib
+  MemoryAllocationLib
+  SerialPortLib
+
+[Sources.common]
+  Pxa988PlatformLib.c
+  Pxa988PlatformLibMem.c
+
+[Sources.ARM]
+  Arm/Pxa988Helper.S    | GCC
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdSystemMemoryBase
+  gArmTokenSpaceGuid.PcdSystemMemorySize
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase
+  gPxa988TokenSpaceGuid.PcdFrameBufferHeight
+  gPxa988TokenSpaceGuid.PcdFrameBufferStride
+
+[Ppis]
+  gArmMpCoreInfoPpiGuid

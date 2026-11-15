@@ -1,0 +1,40 @@
+## @file
+#  EFI_TIMER_ARCH_PROTOCOL on the Marvell MMP APB timer (timer 0, match 0,
+#  GIC SPI 13). Cortex-A9 has no generic timer, so ArmPkg TimerDxe cannot be
+#  used on PXA988.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = MmpTimerDxe
+  FILE_GUID                      = 3c9f7a21-5e6b-4d8a-9b0c-1f2e3d4c5b6a
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = MmpTimerInitialize
+
+[Sources]
+  MmpTimerDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DebugLib
+  IoLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiTimerArchProtocolGuid
+  gHardwareInterruptProtocolGuid
+
+[Pcd]
+  gEmbeddedTokenSpaceGuid.PcdTimerPeriod
+
+[Depex]
+  gHardwareInterruptProtocolGuid

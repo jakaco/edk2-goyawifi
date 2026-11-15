@@ -1,0 +1,43 @@
+## @file
+#  Graphics Output Protocol on top of the framebuffer the vendor bootloader
+#  leaves scanning out (simple-framebuffer style; no display re-init).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = SimpleFbDxe
+  FILE_GUID                      = 9a7c2e41-0b3d-4f6e-8a1c-5d2b7e9f0c14
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = SimpleFbDxeInitialize
+
+[Sources]
+  SimpleFbDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  DebugLib
+  FrameBufferBltLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiGraphicsOutputProtocolGuid
+  gEfiDevicePathProtocolGuid
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase
+  gPxa988TokenSpaceGuid.PcdFrameBufferWidth
+  gPxa988TokenSpaceGuid.PcdFrameBufferHeight
+  gPxa988TokenSpaceGuid.PcdFrameBufferStride
+
+[Depex]
+  TRUE

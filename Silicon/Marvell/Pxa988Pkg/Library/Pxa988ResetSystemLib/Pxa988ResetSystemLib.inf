@@ -1,0 +1,29 @@
+## @file
+#  ResetSystemLib for PXA988: watchdog reset, 88PM822 power off, and
+#  "recovery" platform-specific reset (sets the S-Boot RTC_BR0 flag).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Pxa988ResetSystemLib
+  FILE_GUID                      = 1d5c7e90-6a4b-4f8e-b3c2-7e9a0d1f2b3c
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = ResetSystemLib
+
+[Sources]
+  Pxa988ResetSystemLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  IoLib
+  TimerLib

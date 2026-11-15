@@ -1,0 +1,26 @@
+## @file
+#  TimerLib on the Marvell MMP APB timer (counter 1, free running, 3.25 MHz).
+#  Cortex-A9 has no architected generic timer, so ArmArchTimerLib cannot be
+#  used on PXA988.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = MmpTimerLib
+  FILE_GUID                      = 4a0d9e3c-1c7f-4f0a-9a4e-6f2d1b8c5e71
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = TimerLib
+
+[Sources]
+  MmpTimerLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  IoLib

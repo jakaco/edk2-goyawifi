@@ -1,0 +1,28 @@
+## @file
+#  SerialPortLib for the PXA/MMP UART (16550 compatible, 32-bit registers,
+#  needs IER.UUE to be set).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = PxaUartSerialPortLib
+  FILE_GUID                      = 8f1c2d3e-4b5a-4c6d-9e7f-0a1b2c3d4e5f
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = SerialPortLib
+
+[Sources]
+  PxaUartSerialPortLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  IoLib
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdDebugUartBase
+  gPxa988TokenSpaceGuid.PcdDebugUartBaudRate

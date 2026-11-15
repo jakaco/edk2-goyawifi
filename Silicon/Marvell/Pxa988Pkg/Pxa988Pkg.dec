@@ -1,0 +1,29 @@
+## @file
+#  Marvell PXA988 / PXA986 silicon package
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION              = 0x0001001B
+  PACKAGE_NAME                   = Pxa988Pkg
+  PACKAGE_GUID                   = 7b3e5a52-58a8-4f53-9b5a-31b0a7d4e1c3
+  PACKAGE_VERSION                = 0.1
+
+[Includes]
+  Include
+
+[Guids]
+  gPxa988TokenSpaceGuid = { 0x2e8c6b1a, 0x9f4d, 0x4c2b, { 0x8a, 0x61, 0x3d, 0x5f, 0x0e, 0x7a, 0x92, 0xb4 } }
+
+[PcdsFixedAtBuild]
+  # simple-framebuffer left by the vendor bootloader
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase|0x17000000|UINT32|0x00000001
+  gPxa988TokenSpaceGuid.PcdFrameBufferWidth|1024|UINT32|0x00000002
+  gPxa988TokenSpaceGuid.PcdFrameBufferHeight|600|UINT32|0x00000003
+  gPxa988TokenSpaceGuid.PcdFrameBufferStride|1024|UINT32|0x00000004
+  # Debug UART
+  gPxa988TokenSpaceGuid.PcdDebugUartBase|0xD4017000|UINT32|0x00000010
+  gPxa988TokenSpaceGuid.PcdDebugUartBaudRate|115200|UINT32|0x00000011
+  # Which SDHCI controllers to expose (bit0 = SDH1 microSD, bit2 = SDH3 eMMC)
+  gPxa988TokenSpaceGuid.PcdSdhciMask|0x5|UINT32|0x00000020

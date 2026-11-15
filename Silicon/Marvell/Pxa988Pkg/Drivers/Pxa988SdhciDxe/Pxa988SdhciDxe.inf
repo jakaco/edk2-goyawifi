@@ -1,0 +1,41 @@
+## @file
+#  Registers the PXA988 SDHCI controllers as non-discoverable devices (so the
+#  generic SdMmcPciHcDxe drives them through NonDiscoverablePciDeviceDxe) and
+#  installs an EDKII_SD_MMC_OVERRIDE for the PXAv3 quirks.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Pxa988SdhciDxe
+  FILE_GUID                      = 5b8d1f02-7c3e-4a69-b1d4-8e0f2a3c4d5e
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = Pxa988SdhciInitialize
+
+[Sources]
+  Pxa988SdhciDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DebugLib
+  IoLib
+  NonDiscoverableDeviceRegistrationLib
+  TimerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEdkiiSdMmcOverrideProtocolGuid
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdSdhciMask
+
+[Depex]
+  TRUE

@@ -1,0 +1,40 @@
+## @file
+#  Simple Text Input on the goyawifi hardware keys:
+#  Volume Up = Up, Volume Down = Down, Home = Enter.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = GoyaWifiKeypadDxe
+  FILE_GUID                      = 8d2e4f61-3a5b-4c7d-9e0f-1a2b3c4d5e6f
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = KeypadInitialize
+
+[Sources]
+  GoyaWifiKeypadDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  DebugLib
+  IoLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiSimpleTextInProtocolGuid
+  gEfiDevicePathProtocolGuid
+
+[Guids]
+  gEfiConsoleInDeviceGuid
+  gEfiEndOfDxeEventGroupGuid
+
+[Depex]
+  TRUE

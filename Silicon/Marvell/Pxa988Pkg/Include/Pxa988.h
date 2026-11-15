@@ -1,0 +1,125 @@
+/** @file
+  Marvell PXA988 / PXA986 register map (subset used by the firmware).
+
+  Derived from the Marvell PXA988 vendor kernel (3.4) and the goyawifi
+  Linux 4.19 port.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent
+**/
+
+#ifndef PXA988_H_
+#define PXA988_H_
+
+//
+// Cortex-A9 MPCore private region
+//
+#define PXA988_L2C_BASE             0xD1DFB000
+#define PXA988_SCU_BASE             0xD1DFE000
+#define PXA988_GICC_BASE            0xD1DFE100
+#define PXA988_GICD_BASE            0xD1DFF000
+
+#define PL310_CTRL                  0x100
+#define PL310_CACHE_SYNC            0x730
+#define PL310_CLEAN_INV_WAY         0x7FC
+
+//
+// Power management units
+//
+#define PXA988_MPMU_BASE            0xD4050000
+#define MPMU_UART_PLL               (PXA988_MPMU_BASE + 0x0014)
+#define MPMU_CPRR                   (PXA988_MPMU_BASE + 0x0020)
+#define MPMU_WDTPCR                 (PXA988_MPMU_BASE + 0x0200)
+#define MPMU_APRR                   (PXA988_MPMU_BASE + 0x1020)
+#define   MPMU_APRR_CPR             BIT0
+#define   MPMU_APRR_WDTR            BIT4
+
+#define PXA988_APMU_BASE            0xD4282800
+#define APMU_SDH0                   (PXA988_APMU_BASE + 0x0054)
+#define APMU_SDH1                   (PXA988_APMU_BASE + 0x0058)
+#define APMU_USB                    (PXA988_APMU_BASE + 0x005C)
+#define APMU_SDH2                   (PXA988_APMU_BASE + 0x00E0)
+#define   SDH_CLK_RST_N             BIT0
+#define   SDH_CLK_AXI_RST_N         BIT1
+#define   SDH_CLK_ACLK_EN           BIT3
+#define   SDH_CLK_FCLK_EN           BIT4
+#define   SDH_CLK_DIV(x)            (((x) & 7) << 8)
+#define   SDH_CLK_FC                BIT11
+#define PXA988_SDH_BASE_CLOCK       52000000    // pll1_416 / 8
+
+#define PXA988_APBC_BASE            0xD4015000
+#define APBC_UART1                  (PXA988_APBC_BASE + 0x0000)
+#define APBC_GPIO                   (PXA988_APBC_BASE + 0x0008)
+#define APBC_TIMERS0                (PXA988_APBC_BASE + 0x0034)
+#define PXA988_APBCP_BASE           0xD403B000
+#define APBCP_TWSI2                 (PXA988_APBCP_BASE + 0x0028)
+#define   APBC_APBCLK               BIT0
+#define   APBC_FNCLK                BIT1
+#define   APBC_RST                  BIT2
+#define   APBC_FNCLKSEL(x)          (((x) & 7) << 4)
+
+//
+// APB peripherals
+//
+#define PXA988_TIMER0_BASE          0xD4014000
+#define PXA988_TIMER_FREQ           3250000
+#define PXA988_TIMER0_IRQ           (32 + 13)
+#define TMR_CCR                     0x00
+#define TMR_TN_MM(n, m)             (0x04 + ((n) << 3) + (((n) + (m)) << 2))
+#define TMR_PLCR(n)                 (0x58 + ((n) << 2))
+#define TMR_IER(n)                  (0x40 + ((n) << 2))
+#define TMR_ICR(n)                  (0x74 + ((n) << 2))
+#define TMR_SR(n)                   (0x34 + ((n) << 2))
+#define TMR_CER                     0x84
+#define TMR_CMR                     0x88
+#define TMR_CVWR(n)                 (0xA4 + ((n) << 2))
+
+#define PXA988_UART1_BASE           0xD4017000  // debug UART, "AP UART0"
+#define PXA988_UART_CLOCK           14745600
+
+#define PXA988_GPIO_BASE            0xD4019000
+#define GPIO_BANK(n)                (PXA988_GPIO_BASE + (((n) / 32) < 3 ? (((n) / 32) << 2) : (0x100 + ((((n) / 32) - 3) << 2))))
+#define GPIO_GPLR                   0x00
+#define GPIO_GPDR                   0x0C
+#define GPIO_GCDR                   0x60
+
+#define PXA988_MFPR_BASE            0xD401E000
+#define   MFPR_AF_MASK              0x7
+#define MFPR_MMC1_DAT3              0x0094
+#define MFPR_MMC1_DAT2              0x0098
+#define MFPR_MMC1_DAT1              0x009C
+#define MFPR_MMC1_DAT0              0x00A0
+#define MFPR_MMC1_CMD               0x00A4
+#define MFPR_MMC1_CLK               0x00A8
+#define MFPR_GPIO11                 0x0108
+#define GOYAWIFI_SD_CD_GPIO         11          // active low
+
+#define PXA988_TWSI2_BASE           0xD4037000
+#define PXA988_RTC_BR0              0xD4010014
+#define   RTC_BR0_RECOVERY          0x7265636F  // "reco"
+
+#define PXA988_WDT_BASE             0xD4080000
+#define WDT_WMER                    (PXA988_WDT_BASE + 0x64)
+#define WDT_WMR                     (PXA988_WDT_BASE + 0x68)
+#define WDT_WVR                     (PXA988_WDT_BASE + 0x6C)
+#define WDT_WSR                     (PXA988_WDT_BASE + 0x70)
+#define WDT_WFAR                    (PXA988_WDT_BASE + 0x9C)
+#define WDT_WSAR                    (PXA988_WDT_BASE + 0xA0)
+
+//
+// AXI peripherals
+//
+#define PXA988_SDH1_BASE            0xD4280000  // microSD  (Linux sdh1)
+#define PXA988_SDH2_BASE            0xD4280800  // SDIO WiFi (Linux sdh2)
+#define PXA988_SDH3_BASE            0xD4281000  // eMMC     (Linux sdh3)
+#define PXA988_SDH_SIZE             0x800
+
+//
+// 88PM822 PMIC on TWSI2
+//
+#define PM822_I2C_ADDR              0x30
+#define PM800_WAKEUP1               0x0D
+#define   PM800_SW_PDOWN            BIT5
+#define PM822_GENERAL_USE_REG       0xEF
+#define   PM822_SHUTDOWN_BY_POWEROFF 0xA0
+
+#endif // PXA988_H_

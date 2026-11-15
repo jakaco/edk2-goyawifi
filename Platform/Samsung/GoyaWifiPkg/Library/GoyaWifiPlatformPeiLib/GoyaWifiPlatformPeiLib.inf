@@ -1,0 +1,36 @@
+## @file
+#  goyawifi PlatformPeiLib: publishes the main FV and carves the regions the
+#  vendor boot chain owns out of the UEFI memory map.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = GoyaWifiPlatformPeiLib
+  FILE_GUID                      = 0f3b6d52-8e1a-4c7b-a2d9-5b6c7e8f9a0b
+  MODULE_TYPE                    = SEC
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = PlatformPeiLib
+
+[Sources]
+  GoyaWifiPlatformPeiLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  ArmPkg/ArmPkg.dec
+  ArmPlatformPkg/ArmPlatformPkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  DebugLib
+  HobLib
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdFvBaseAddress
+  gArmTokenSpaceGuid.PcdFvSize
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase
+  gPxa988TokenSpaceGuid.PcdFrameBufferHeight
+  gPxa988TokenSpaceGuid.PcdFrameBufferStride
