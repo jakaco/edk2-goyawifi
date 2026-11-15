@@ -90,7 +90,17 @@
 #define MFPR_MMC1_DAT0              0x00A0
 #define MFPR_MMC1_CMD               0x00A4
 #define MFPR_MMC1_CLK               0x00A8
+#define MFPR_GPIO1                  0x00E0
+#define MFPR_GPIO2                  0x00E4
 #define MFPR_GPIO11                 0x0108
+#define MFPR_GPIO13                 0x0110
+#define   MFPR_PULL_MASK            (BIT15 | BIT14 | BIT13)
+#define   MFPR_PULL_UP              (BIT15 | BIT14)
+
+#define PXA988_KPC_PC               0xD4012000  // keypad controller
+#define APBC_KPC                    (PXA988_APBC_BASE + 0x0030)
+#define APMU_WAKE_CLR               (PXA988_APMU_BASE + 0x007C)
+#define   APMU_WAKE_CLR_KPC         BIT3
 #define GOYAWIFI_SD_CD_GPIO         11          // active low
 
 #define PXA988_TWSI2_BASE           0xD4037000

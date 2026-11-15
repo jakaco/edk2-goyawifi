@@ -163,7 +163,23 @@ KeypadInitialize (
   EFI_EVENT   EndOfDxe;
   UINTN       Index;
 
-  // Keys are GPIO inputs (S-Boot already muxes them, make sure of the dir)
+  //
+  // S-Boot leaves the volume keys in PXA keypad-controller mode. Like the
+  // vendor kernel in gpio-keys mode: stop the keypad controller and its
+  // clock, switch the pads to GPIO (AF0) and enable the internal pull-ups
+  // the volume keys need (Home has an external pull-up).
+  //
+  if ((MmioRead32 (APBC_KPC) & APBC_APBCLK) != 0) {
+    MmioWrite32 (PXA988_KPC_PC, 0);
+    MmioWrite32 (APBC_KPC, 0);
+  }
+
+  MmioOr32 (APMU_WAKE_CLR, APMU_WAKE_CLR_KPC);
+  MmioAndThenOr32 (PXA988_MFPR_BASE + MFPR_GPIO1, ~(UINT32)(MFPR_PULL_MASK | MFPR_AF_MASK), MFPR_PULL_UP);
+  MmioAndThenOr32 (PXA988_MFPR_BASE + MFPR_GPIO2, ~(UINT32)(MFPR_PULL_MASK | MFPR_AF_MASK), MFPR_PULL_UP);
+  MmioAnd32 (PXA988_MFPR_BASE + MFPR_GPIO13, ~(UINT32)(MFPR_PULL_MASK | MFPR_AF_MASK));
+
+  // Keys are GPIO inputs
   for (Index = 0; Index < ARRAY_SIZE (mKeys); Index++) {
     MmioWrite32 (GPIO_BANK (mKeys[Index].Gpio) + GPIO_GCDR, 1U << (mKeys[Index].Gpio % 32));
   }
