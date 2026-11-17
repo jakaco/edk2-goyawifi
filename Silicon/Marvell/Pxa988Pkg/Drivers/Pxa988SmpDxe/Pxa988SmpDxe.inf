@@ -1,0 +1,42 @@
+## @file
+#  Brings up the second Cortex-A9 core of the PXA988/PXA986 as a self-test and
+#  parks it in reset again before the OS starts.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Pxa988SmpDxe
+  FILE_GUID                      = 3c7a9e14-5d02-4b8f-a6e1-7f20b94c8d35
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = Pxa988SmpInitialize
+
+[Sources]
+  Pxa988SmpDxe.c
+  Cpu1Stub.S
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseMemoryLib
+  CacheMaintenanceLib
+  DebugLib
+  IoLib
+  TimerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Guids]
+  gEfiEventExitBootServicesGuid
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdSecondaryCpuBringup
+
+[Depex]
+  TRUE

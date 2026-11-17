@@ -81,12 +81,17 @@ READ_LOCK_STATUS   = TRUE
   INF MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
   INF MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
   INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
-  INF MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
   INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
   INF Silicon/Marvell/Pxa988Pkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
   INF Platform/Samsung/GoyaWifiPkg/Drivers/GoyaWifiKeypadDxe/GoyaWifiKeypadDxe.inf
 
   INF Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SdhciDxe/Pxa988SdhciDxe.inf
+  INF Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SmpDxe/Pxa988SmpDxe.inf
+  INF Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988UsbDxe/Pxa988UsbDxe.inf
+  INF Silicon/Marvell/Pxa988Pkg/Drivers/ChipIdeaEhciDxe/ChipIdeaEhciDxe.inf
+  INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+  INF MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
+  INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
   INF MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
   INF MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
   INF MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf

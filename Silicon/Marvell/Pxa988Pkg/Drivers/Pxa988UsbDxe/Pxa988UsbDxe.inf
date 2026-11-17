@@ -1,0 +1,37 @@
+## @file
+#  Powers up the PXA988 UTMI PHY and registers the USB 2.0 controller as a
+#  non-discoverable EHCI host, driven by ChipIdeaEhciDxe + the generic USB stack.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Pxa988UsbDxe
+  FILE_GUID                      = 4e1b7d30-8a62-4c95-b7f3-2d0c9e5a6b18
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = Pxa988UsbInitialize
+
+[Sources]
+  Pxa988UsbDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DebugLib
+  IoLib
+  NonDiscoverableDeviceRegistrationLib
+  TimerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdUsbHostEnable
+
+[Depex]
+  TRUE

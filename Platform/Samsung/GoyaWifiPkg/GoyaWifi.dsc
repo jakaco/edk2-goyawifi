@@ -291,7 +291,6 @@
   MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
   MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
   MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
-  MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
   MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf {
     <LibraryClasses>
       DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
@@ -304,6 +303,12 @@
   # Storage: PXAv3 SDHCI via the generic SD/MMC stack
   #
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SdhciDxe/Pxa988SdhciDxe.inf
+  Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SmpDxe/Pxa988SmpDxe.inf
+  Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988UsbDxe/Pxa988UsbDxe.inf
+  Silicon/Marvell/Pxa988Pkg/Drivers/ChipIdeaEhciDxe/ChipIdeaEhciDxe.inf
+  MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
+  MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
   MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
   MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
   MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf

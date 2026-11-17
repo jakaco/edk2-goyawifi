@@ -35,6 +35,17 @@ def on_read(uc, access, addr, size, value, ud):
     elif addr == UART_LSR:
         uc.mem_write(UART_LSR, struct.pack('<I', 0x60))   # always ready, no input
 
+# USB EHCI registers (ChipIdea-style: CAPLENGTH 0x40, one port): reset bit self-clears
+mu.mem_write(0xd4208100, struct.pack('<I', 0x01000040))      # HCIVERSION 0x100, CAPLENGTH 0x40
+mu.mem_write(0xd4208104, struct.pack('<I', 0x00000001))      # HCSPARAMS: 1 port
+USBCMD, USBSTS = 0xd4208140, 0xd4208144
+def on_usb_read(uc, access, addr, size, value, ud):
+    if addr == USBCMD:
+        v = struct.unpack('<I', uc.mem_read(USBCMD, 4))[0]
+        uc.mem_write(USBCMD, struct.pack('<I', v & ~2))
+        uc.mem_write(USBSTS, struct.pack('<I', 0x1000 if not (v & 1) else 0))
+mu.hook_add(UC_HOOK_MEM_READ, on_usb_read, begin=USBCMD, end=USBCMD + 3)
+
 mu.hook_add(UC_HOOK_MEM_WRITE, on_write, begin=0xd4017000, end=0xd4017fff)
 mu.hook_add(UC_HOOK_MEM_READ, on_read, begin=0xd4014000, end=0xd4017fff)
 

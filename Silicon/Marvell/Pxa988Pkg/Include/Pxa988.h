@@ -147,4 +147,29 @@
 #define PM822_GENERAL_USE_REG       0xEF
 #define   PM822_SHUTDOWN_BY_POWEROFF 0xA0
 
+//
+// Secondary core (CPU1) release, as in the vendor kernels
+// (platsmp-pxa988.c / reset-pxa988.c)
+//
+#define PXA988_CIU_BASE             0xD4282C00
+#define CIU_WARM_RESET_VECTOR       (PXA988_CIU_BASE + 0x00D8)
+#define APMU_CORE_STATUS            (PXA988_APMU_BASE + 0x0090)
+#define APMU_CC2_AP                 (PXA988_APMU_BASE + 0x0100)
+#define   CC2_CPU1_RST             BIT20
+#define   CC2_CPU1_DBG_RST         BIT22
+#define   CC2_CPU1_WDOG_RST        BIT23
+#define APMU_CORE_WAKEUP_CTL        (PXA988_APMU_BASE + 0x012C)
+#define   APMU_WAKEUP_CORE1        BIT1
+
+//
+// USB 2.0 OTG controller (ChipIdea-style core) and UTMI PHY
+//
+#define PXA988_USB_BASE             0xD4208000
+#define PXA988_USB_EHCI_BASE        0xD4208100  // EHCI capability registers
+#define PXA988_USB_EHCI_SIZE        0x100
+#define PXA988_USB_PHY_BASE         0xD4207000
+#define USB_EHCI_USBMODE            0xA8        // from EHCI base
+#define   USBMODE_CM_HOST          0x3
+#define APMU_USB_CLK_EN             0x9         // AXI reset released + clock on
+
 #endif // PXA988_H_

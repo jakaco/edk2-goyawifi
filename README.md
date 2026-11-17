@@ -90,19 +90,30 @@ flash a stock/LineageOS `boot.img` to `KERNEL`.
 | CPU / MMU / caches | ArmPkg CpuDxe, short-descriptor MMU | L2 (PL310) cleaned and left **off** |
 | Interrupts | A9GicDxe (ArmGicV2Dxe copy) | A9 MPCore GIC @ `0xD1DFF000` / `0xD1DFE100`; upstream driver can't map the unaligned A9 CPU interface |
 | Timer | MmpTimerDxe + MmpTimerLib | 3.25 MHz APB timer, 10 ms tick |
-| Serial | PxaUartSerialPortLib | UART1 `0xD4017000`, 115200 8N1 |
+| Serial | PxaUartSerialPortLib | UART1 `0xD4017000`, 115200 8N1; DEBUG log only, no serial console in ConIn/ConOut |
 | Display | SimpleFbDxe | reuses S-Boot's splash buffer, no re-init |
 | Storage | SdMmcPciHcDxe via NonDiscoverablePciDeviceDxe | eMMC (SDH3, 26 MHz, clk-delay 15) and microSD (SDH1, 50 MHz, GPIO 11 CD, LDO4/LDO5 enabled) |
-| Input | GoyaWifiKeypadDxe | Vol Up / Vol Down = Up / Down, Home / Power = Enter; keys taken out of keypad-controller mode with pad pull-ups (as the vendor kernel does) |
+| Input | GoyaWifiKeypadDxe | Vol Up / Vol Down = Up / Down, Home = Enter, Power = Esc; keys taken out of keypad-controller mode with pad pull-ups (as the vendor kernel does) |
 | Interrupt routing | Pxa988PlatformLib | legacy ICU global IRQ/FIQ outputs masked (`0xD4282114/144`), as 4.19 `pxa988_dt_init_irq()` |
 | PMIC | Pm822Lib | polled TWSI2; base page `0x30`, power page `0x31` |
 | On-screen log | PxaUartSerialPortLib | DEBUG builds mirror the log to the framebuffer (8x19 font, 128x31) |
+| CPU1 | Pxa988SmpDxe | **experimental self-test**: releases the second core with the vendor-kernel sequence (`CIU_WARM_RESET_VECTOR` + `APMU_CC2_AP` reset bits), runs a tiny MMU-off stub (`Cpu1Stub.S`) that reports MIDR/MPIDR, answers a ping and parks, then puts the core back into reset before ExitBootServices (the OS releases it itself). Not an MP-services implementation. `PcdSecondaryCpuBringup` turns it off |
+| USB host | Pxa988UsbDxe + ChipIdeaEhciDxe + UsbBus/UsbKb/UsbMassStorage | **experimental**: APMU USB clock, UTMI PHY calibration (vendor values), controller reset, host mode, EHCI at `0xD4208100`. ChipIdeaEhciDxe is EhciDxe plus a `USBMODE` write after every controller reset. **No VBUS control** (needs a powered hub / OTG Y cable); the vendor kernels only ever use this port as a device. `PcdUsbHostEnable` turns it off |
 | Reset / power off | Pxa988ResetSystemLib | WDT; 88PM822 `SW_PDOWN` over TWSI2 |
 | Variables | emulated (RAM) | not persistent across reboots |
 | OS hand-off | DtPlatformDxe | DT config table, no ACPI |
 
-Not implemented: USB, SMP bring-up of CPU1 (left to the OS), DVFS, persistent
-variables, charging.
+Not implemented: EFI_MP_SERVICES (CPU1 is only self-tested), VBUS switching, USB
+device mode, DVFS, persistent variables, charging.
+
+## Second core and USB: what to look for
+
+DEBUG builds print (on the screen log) lines starting with `Pxa988Smp:` and
+`Pxa988Usb:`. A healthy CPU1 prints `CPU1 is up: MIDR=0x410fc09x MPIDR=0x80000001`
+(core ID 1 in the low bits), `CPU1 ping OK` and a heartbeat that increases.
+`CPU1 did not come up` means the release sequence does not work as in the
+kernel (CC2 and the warm-reset vector are printed for debugging).
+`tools/emu/cpu1_stub_test.py` runs the stub alone in Unicorn.
 
 ## Memory map
 
