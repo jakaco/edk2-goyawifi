@@ -3,8 +3,10 @@
 #
 #  The whole FD is the "kernel" of an Android boot.img: S-Boot copies it to
 #  0x10008000 and jumps to offset 0. Offset 0 holds a zImage-style header
-#  whose first instruction branches to the FV at +0x1000, where GenFv has
-#  patched the FV zero vector with a branch to the SEC entry point.
+#  (Header/FdHeader.S). If it finds itself anywhere else (U-Boot runs
+#  uncompressed Android "kernels" in place, e.g. `fastboot boot`), it first
+#  copies the FD to 0x10008000. It then jumps to the FV at +0x1000, whose
+#  zero vector GenFv has patched with a branch to the SEC entry point.
 #
 #  SPDX-License-Identifier: BSD-2-Clause-Patent
 ##
@@ -23,21 +25,9 @@ BlockSize     = 0x00001000
 NumBlocks     = $(FD_NUM_BLOCKS)
 
 0x00000000|0x00001000
-DATA = {
-  0xfe, 0x03, 0x00, 0xea,    # 0x00: b 0x1000
-  0x00, 0x00, 0xa0, 0xe1,    # 0x04: nop (mov r0, r0)
-  0x00, 0x00, 0xa0, 0xe1,    # 0x08
-  0x00, 0x00, 0xa0, 0xe1,    # 0x0c
-  0x00, 0x00, 0xa0, 0xe1,    # 0x10
-  0x00, 0x00, 0xa0, 0xe1,    # 0x14
-  0x00, 0x00, 0xa0, 0xe1,    # 0x18
-  0x00, 0x00, 0xa0, 0xe1,    # 0x1c
-  0xf6, 0x03, 0x00, 0xea,    # 0x20: b 0x1000
-  0x18, 0x28, 0x6f, 0x01,    # 0x24: zImage magic 0x016f2818
-  0x00, 0x00, 0x00, 0x00,    # 0x28: start (position independent)
-  0x00, 0x00, 0x20, 0x00,    # 0x2c: end = FD size (patched by the packer)
-  0x01, 0x02, 0x03, 0x04     # 0x30: little endian
-}
+# Self-relocating, zImage-compatible header (Header/FdHeader.S): copies the
+# FD to FD_BASE if entered elsewhere, then jumps to the FV at +0x1000.
+!include Platform/Samsung/GoyaWifiPkg/Header/FdHeader.fdf.inc
 
 0x00001000|$(FVMAIN_COMPACT_SIZE)
 gArmTokenSpaceGuid.PcdFvBaseAddress|gArmTokenSpaceGuid.PcdFvSize
@@ -74,7 +64,7 @@ READ_LOCK_STATUS   = TRUE
   INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
 
   INF ArmPkg/Drivers/CpuDxe/CpuDxe.inf
-  INF ArmPkg/Drivers/ArmGicDxe/ArmGicV2Dxe.inf
+  INF Silicon/Marvell/Pxa988Pkg/Drivers/A9GicDxe/A9GicDxe.inf
   INF Silicon/Marvell/Pxa988Pkg/Drivers/MmpTimerDxe/MmpTimerDxe.inf
   INF EmbeddedPkg/MetronomeDxe/MetronomeDxe.inf
   INF MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
@@ -112,6 +102,7 @@ READ_LOCK_STATUS   = TRUE
   }
 
   INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
+  INF MdeModulePkg/Universal/BootManagerPolicyDxe/BootManagerPolicyDxe.inf
   INF MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
   INF MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf
   INF MdeModulePkg/Application/UiApp/UiApp.inf

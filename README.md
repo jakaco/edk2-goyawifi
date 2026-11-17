@@ -16,7 +16,8 @@ Like lk2nd or the U-Boot port, this firmware replaces the *Linux kernel*:
 
 ```
 S-Boot ──loads KERNEL partition boot.img──> 0x10008000 (our FD)
-   FD+0x0000  zImage-style header: "b 0x1000", magic 0x016f2818 @ +0x24
+   FD+0x0000  zImage-style header (Header/FdHeader.S), magic 0x016f2818 @ +0x24;
+              if entered anywhere but 0x10008000, it copies the FD there first
    FD+0x1000  FVMAIN_COMPACT: zero vector patched by GenFv -> PeilessSec
               PeilessSec: L2 off, UART, MMU, HOBs, LZMA-decompress FvMain
               DXE: GIC, MMP timer, GOP on S-Boot's splash, SD/eMMC, BDS
@@ -26,9 +27,11 @@ S-Boot leaves DRAM, PLLs, the PMIC and the display (LCD + DSI + VX5B3D
 bridge, 1024x600 a8r8g8b8 at `0x17000000`) initialised, so the firmware only
 reuses them.
 
-It can also be chain-loaded from the goyawifi U-Boot port (`bootmenu` →
-"UEFI firmware", which loads `GOYAWIFI_EFI.fd` from microSD/eMMC partition 1
-and starts it with `bootz`).
+It can also be started from the goyawifi U-Boot port without flashing:
+`fastboot boot goyawifi-uefi-debug-boot.img`. U-Boot runs uncompressed
+Android images in place from its fastboot buffer, and the header stub
+relocates the FD. The bootmenu entry "UEFI firmware" also works: it loads
+`GOYAWIFI_EFI.fd` from microSD and starts it with `bootz`.
 
 ## Layout
 
@@ -85,7 +88,7 @@ flash a stock/LineageOS `boot.img` to `KERNEL`.
 | Area | Implementation | Notes |
 |---|---|---|
 | CPU / MMU / caches | ArmPkg CpuDxe, short-descriptor MMU | L2 (PL310) cleaned and left **off** |
-| Interrupts | ArmGicV2Dxe | A9 MPCore GIC @ `0xD1DFF000` / `0xD1DFE100` |
+| Interrupts | A9GicDxe (ArmGicV2Dxe copy) | A9 MPCore GIC @ `0xD1DFF000` / `0xD1DFE100`; upstream driver can't map the unaligned A9 CPU interface |
 | Timer | MmpTimerDxe + MmpTimerLib | 3.25 MHz APB timer, 10 ms tick |
 | Serial | PxaUartSerialPortLib | UART1 `0xD4017000`, 115200 8N1 |
 | Display | SimpleFbDxe | reuses S-Boot's splash buffer, no re-init |
@@ -121,6 +124,22 @@ physical `0x00108000` for S-Boot), which isn't EFI-stub aware. For EFI boot,
 build that kernel with the fixup **off** and the regions above kept reserved
 (they are, through the EFI memory map). That kernel-side change hasn't been
 tested yet.
+
+## Emulated smoke test
+
+`tools/emu/boot_emu.py` runs a packed boot.img on an emulated Cortex-A9
+(Unicorn), entering at the U-Boot fastboot buffer (`0x30000800`). Peripherals
+are faked as RAM, with a UART that's always ready, a counting timer and a
+plausible `GICD_TYPER`. It prints the UART log and saves the emulated screen.
+It can't deliver interrupts, so it stops at the BDS countdown. It still
+catches link, SEC, decompression and DXE dispatch failures before anything
+touches the tablet.
+
+```bash
+pip install unicorn pillow
+python3 tools/emu/reloc_test.py out/goyawifi-uefi-debug-boot.img <SEC entry from FVMAIN_COMPACT.Fv.map>
+python3 tools/emu/boot_emu.py out/goyawifi-uefi-debug-boot.img 4000000000 screen.png
+```
 
 ## Debugging
 
