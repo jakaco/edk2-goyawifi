@@ -30,7 +30,7 @@ STATIC CONST KEY_MAP  mKeys[] = {
   { 1,  SCAN_UP,   CHAR_NULL            },   // Volume Up
   { 2,  SCAN_DOWN, CHAR_NULL            },   // Volume Down
   { 13, SCAN_NULL, CHAR_CARRIAGE_RETURN },   // Home
-  { KEY_GPIO_POWER, SCAN_NULL, CHAR_CARRIAGE_RETURN },   // Power
+  { KEY_GPIO_POWER, SCAN_ESC,  CHAR_NULL            },   // Power = Esc
 };
 
 #pragma pack(1)
