@@ -25,15 +25,18 @@
 [LibraryClasses]
   ArmLib
   BaseMemoryLib
+  PrintLib
   CacheMaintenanceLib
   DebugLib
   IoLib
   TimerLib
   UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
   UefiDriverEntryPoint
 
 [Guids]
   gEfiEventExitBootServicesGuid
+  gEfiEndOfDxeEventGroupGuid
 
 [FixedPcd]
   gPxa988TokenSpaceGuid.PcdSecondaryCpuBringup

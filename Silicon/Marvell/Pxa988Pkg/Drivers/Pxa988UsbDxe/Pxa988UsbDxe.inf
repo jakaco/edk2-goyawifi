@@ -23,12 +23,18 @@
 
 [LibraryClasses]
   BaseLib
+  BaseMemoryLib
+  PrintLib
   DebugLib
   IoLib
   NonDiscoverableDeviceRegistrationLib
   TimerLib
   UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
   UefiDriverEntryPoint
+
+[Guids]
+  gEfiEndOfDxeEventGroupGuid
 
 [FixedPcd]
   gPxa988TokenSpaceGuid.PcdUsbHostEnable

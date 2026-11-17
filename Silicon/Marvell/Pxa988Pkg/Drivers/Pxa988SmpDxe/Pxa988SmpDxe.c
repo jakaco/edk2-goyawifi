@@ -19,8 +19,10 @@
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
 #include <Library/PcdLib.h>
+#include <Library/PrintLib.h>
 #include <Library/TimerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Pxa988.h>
 
 #define MB_OFFSET       0x100
@@ -54,6 +56,53 @@ STATIC UINT32     mSavedVector;
 STATIC UINT32     mSavedCc2;
 STATIC BOOLEAN    mCpu1Released;
 STATIC EFI_EVENT  mExitBsEvent;
+STATIC EFI_EVENT  mEndOfDxeEvent;
+STATIC CHAR8      mReport[512];
+STATIC UINTN      mReportLen;
+
+/**
+  Print a line to the debug log and keep it for the "Cpu1Status" variable
+  (shown by the UEFI Shell with: dmpstore Cpu1Status).
+**/
+STATIC
+VOID
+Log (
+  IN CONST CHAR8  *Format,
+  ...
+  )
+{
+  VA_LIST  Args;
+  CHAR8    Line[160];
+  UINTN    Len;
+
+  VA_START (Args, Format);
+  Len = AsciiVSPrint (Line, sizeof (Line), Format, Args);
+  VA_END (Args);
+  DEBUG ((DEBUG_INFO, "Pxa988Smp: %a", Line));
+  if (mReportLen + Len < sizeof (mReport)) {
+    CopyMem (mReport + mReportLen, Line, Len);
+    mReportLen += Len;
+  }
+}
+
+STATIC
+VOID
+EFIAPI
+PublishReport (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  gBS->CloseEvent (Event);
+  gRT->SetVariable (
+         L"Cpu1Status",
+         &gPxa988TokenSpaceGuid,
+         EFI_VARIABLE_BOOTSERVICE_ACCESS,
+         mReportLen,
+         mReport
+         );
+}
+
 
 STATIC
 UINT32
@@ -158,7 +207,7 @@ Cpu1Shutdown (
   Cpu1Hold ();                            // OS expects CPU1 held in reset
   MmioWrite32 (CIU_WARM_RESET_VECTOR, mSavedVector);
   mCpu1Released = FALSE;
-  DEBUG ((DEBUG_INFO, "Pxa988Smp: CPU1 parked\n"));
+  Log ("CPU1 parked\n");
 }
 
 EFI_STATUS
@@ -177,6 +226,8 @@ Pxa988SmpInitialize (
   if (!FixedPcdGetBool (PcdSecondaryCpuBringup)) {
     return EFI_SUCCESS;
   }
+
+  gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, PublishReport, NULL, &gEfiEndOfDxeEventGroupGuid, &mEndOfDxeEvent);
 
   StubSize = (UINTN)(Pxa988Cpu1StubEnd - Pxa988Cpu1StubStart);
   ASSERT (StubSize == MB_OFFSET + 0x80);
@@ -197,13 +248,10 @@ Pxa988SmpInitialize (
 
   mSavedVector = MmioRead32 (CIU_WARM_RESET_VECTOR);
   mSavedCc2    = MmioRead32 (APMU_CC2_AP);
-  DEBUG ((
-    DEBUG_INFO,
-    "Pxa988Smp: CC2=0x%08x warm-reset vector=0x%08x, stub at 0x%08x\n",
+  Log ("CC2=0x%08x warm-reset vector=0x%08x, stub at 0x%08x\n",
     mSavedCc2,
     mSavedVector,
-    (UINT32)Page
-    ));
+    (UINT32)Page);
 
   MmioWrite32 (CIU_WARM_RESET_VECTOR, (UINT32)Page);
   MmioRead32 (CIU_WARM_RESET_VECTOR);
@@ -211,7 +259,7 @@ Pxa988SmpInitialize (
   Cpu1Release ();
 
   if (!MbWaitFor (MB_ALIVE, ALIVE_MAGIC, 500)) {
-    DEBUG ((DEBUG_ERROR, "Pxa988Smp: CPU1 did not come up (CC2=0x%08x)\n", MmioRead32 (APMU_CC2_AP)));
+    Log ("CPU1 did not come up (CC2=0x%08x)\n", MmioRead32 (APMU_CC2_AP));
     Cpu1Hold ();
     MmioWrite32 (CIU_WARM_RESET_VECTOR, mSavedVector);
     mCpu1Released = FALSE;
@@ -219,13 +267,10 @@ Pxa988SmpInitialize (
     return EFI_SUCCESS;
   }
 
-  DEBUG ((
-    DEBUG_INFO,
-    "Pxa988Smp: CPU1 is up: MIDR=0x%08x MPIDR=0x%08x SCTLR=0x%08x\n",
+  Log ("CPU1 is up: MIDR=0x%08x MPIDR=0x%08x SCTLR=0x%08x\n",
     MbRead (MB_MIDR),
     MbRead (MB_MPIDR),
-    MbRead (MB_SCTLR)
-    ));
+    MbRead (MB_SCTLR));
 
   //
   // Round trip: write an argument, expect the bitwise complement back
@@ -234,16 +279,16 @@ Pxa988SmpInitialize (
   MbWrite (MB_CMD, 2);
   SendEvent ();
   if (MbWaitFor (MB_ACK, 2, 100) && (MbRead (MB_RESULT) == ~0x12345678U)) {
-    DEBUG ((DEBUG_INFO, "Pxa988Smp: CPU1 ping OK\n"));
+    Log ("CPU1 ping OK\n");
   } else {
-    DEBUG ((DEBUG_ERROR, "Pxa988Smp: CPU1 ping failed (ack=%u result=0x%08x)\n", MbRead (MB_ACK), MbRead (MB_RESULT)));
+    Log ("CPU1 ping failed (ack=%u result=0x%08x)\n", MbRead (MB_ACK), MbRead (MB_RESULT));
   }
 
   Beat0 = MbRead (MB_HEARTBEAT);
   SendEvent ();
   MicroSecondDelay (1000);
   Beat1 = MbRead (MB_HEARTBEAT);
-  DEBUG ((DEBUG_INFO, "Pxa988Smp: CPU1 heartbeat %u -> %u\n", Beat0, Beat1));
+  Log ("CPU1 heartbeat %u -> %u\n", Beat0, Beat1);
 
   Status = gBS->CreateEventEx (
                   EVT_NOTIFY_SIGNAL,

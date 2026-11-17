@@ -24,9 +24,12 @@
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
 #include <Library/NonDiscoverableDeviceRegistrationLib.h>
+#include <Library/BaseMemoryLib.h>
 #include <Library/PcdLib.h>
+#include <Library/PrintLib.h>
 #include <Library/TimerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Pxa988.h>
 
 #define PHY_PLL_CTRL1     0x08
@@ -56,6 +59,47 @@ STATIC CONST struct {
   { 0x40, 0xe400 },
   { 0x58, 0x0000 },
 };
+
+STATIC EFI_EVENT  mEndOfDxeEvent;
+STATIC CHAR8      mReport[512];
+STATIC UINTN      mReportLen;
+
+/**
+  Print a line to the debug log and keep it for the "UsbStatus" variable
+  (shown by the UEFI Shell with: dmpstore UsbStatus).
+**/
+STATIC
+VOID
+Log (
+  IN CONST CHAR8  *Format,
+  ...
+  )
+{
+  VA_LIST  Args;
+  CHAR8    Line[160];
+  UINTN    Len;
+
+  VA_START (Args, Format);
+  Len = AsciiVSPrint (Line, sizeof (Line), Format, Args);
+  VA_END (Args);
+  DEBUG ((DEBUG_INFO, "Pxa988Usb: %a", Line));
+  if (mReportLen + Len < sizeof (mReport)) {
+    CopyMem (mReport + mReportLen, Line, Len);
+    mReportLen += Len;
+  }
+}
+
+STATIC
+VOID
+EFIAPI
+PublishReport (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  gBS->CloseEvent (Event);
+  gRT->SetVariable (L"UsbStatus", &gPxa988TokenSpaceGuid, EFI_VARIABLE_BOOTSERVICE_ACCESS, mReportLen, mReport);
+}
 
 STATIC
 BOOLEAN
@@ -93,6 +137,8 @@ Pxa988UsbInitialize (
     return EFI_SUCCESS;
   }
 
+  gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, PublishReport, NULL, &gEfiEndOfDxeEventGroupGuid, &mEndOfDxeEvent);
+
   MmioWrite32 (APMU_USB, APMU_USB_CLK_EN);
   MmioRead32 (APMU_USB);
   MicroSecondDelay (20);
@@ -103,31 +149,28 @@ Pxa988UsbInitialize (
   }
 
   if (!WaitBits (PXA988_USB_PHY_BASE + PHY_PLL_CTRL1, PHY_PLL_READY, PHY_PLL_READY, 200)) {
-    DEBUG ((DEBUG_WARN, "Pxa988Usb: PHY PLL not ready (0x%04x), continuing\n", MmioRead16 (PXA988_USB_PHY_BASE + PHY_PLL_CTRL1)));
+    Log ("PHY PLL not ready (0x%04x), continuing\n", MmioRead16 (PXA988_USB_PHY_BASE + PHY_PLL_CTRL1));
   }
 
   //
   // Reset the controller into a known state, then pick host mode
   //
   OpBase = PXA988_USB_EHCI_BASE + MmioRead8 (PXA988_USB_EHCI_BASE);        // + CAPLENGTH
-  DEBUG ((
-    DEBUG_INFO,
-    "Pxa988Usb: HCIVERSION=0x%04x HCSPARAMS=0x%08x CAPLENGTH=0x%02x\n",
+  Log ("HCIVERSION=0x%04x HCSPARAMS=0x%08x CAPLENGTH=0x%02x\n",
     MmioRead16 (PXA988_USB_EHCI_BASE + 2),
     MmioRead32 (PXA988_USB_EHCI_BASE + 4),
-    MmioRead8 (PXA988_USB_EHCI_BASE)
-    ));
+    MmioRead8 (PXA988_USB_EHCI_BASE));
 
   MmioAnd32 (OpBase, ~(UINT32)USBCMD_RS);
   WaitBits (OpBase + 4, USBSTS_HCH, USBSTS_HCH, 20);
   MmioOr32 (OpBase, USBCMD_RST);
   if (!WaitBits (OpBase, USBCMD_RST, 0, 100)) {
-    DEBUG ((DEBUG_ERROR, "Pxa988Usb: controller reset timed out\n"));
+    Log ("controller reset timed out\n");
     return EFI_SUCCESS;
   }
 
   MmioWrite32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE, USBMODE_CM_HOST);
-  DEBUG ((DEBUG_INFO, "Pxa988Usb: USBMODE=0x%08x\n", MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE)));
+  Log ("USBMODE=0x%08x\n", MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE));
 
   Handle = NULL;
   Status = RegisterNonDiscoverableMmioDevice (
@@ -139,7 +182,7 @@ Pxa988UsbInitialize (
              PXA988_USB_EHCI_BASE,
              PXA988_USB_EHCI_SIZE
              );
-  DEBUG ((DEBUG_INFO, "Pxa988Usb: EHCI registered: %r\n", Status));
+  Log ("EHCI registered: %r\n", Status);
 
   return EFI_SUCCESS;
 }
