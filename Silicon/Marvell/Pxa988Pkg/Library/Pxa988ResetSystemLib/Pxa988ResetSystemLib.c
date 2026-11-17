@@ -9,110 +9,10 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
+#include <Library/Pm822Lib.h>
 #include <Library/ResetSystemLib.h>
 #include <Library/TimerLib.h>
 #include <Pxa988.h>
-
-//
-// PXA I2C (TWSI) registers, MMP layout
-//
-#define I2C_IDBR  0x08
-#define I2C_ICR   0x10
-#define I2C_ISR   0x18
-
-#define ICR_START   BIT0
-#define ICR_STOP    BIT1
-#define ICR_ACKNAK  BIT2
-#define ICR_TB      BIT3
-#define ICR_SCLE    BIT5
-#define ICR_IUE     BIT6
-
-#define ISR_ITE  BIT6
-#define ISR_IRF  BIT7
-
-STATIC
-EFI_STATUS
-I2cWaitIsr (
-  IN UINT32  Bit
-  )
-{
-  UINTN  Timeout;
-
-  for (Timeout = 0; Timeout < 10000; Timeout++) {
-    if ((MmioRead32 (PXA988_TWSI2_BASE + I2C_ISR) & Bit) != 0) {
-      MmioWrite32 (PXA988_TWSI2_BASE + I2C_ISR, Bit);
-      return EFI_SUCCESS;
-    }
-
-    MicroSecondDelay (10);
-  }
-
-  return EFI_TIMEOUT;
-}
-
-STATIC
-EFI_STATUS
-I2cXfer (
-  IN UINT8  Data,
-  IN UINT32 Flags,
-  IN UINT32 WaitBit
-  )
-{
-  MmioWrite32 (PXA988_TWSI2_BASE + I2C_IDBR, Data);
-  MmioWrite32 (PXA988_TWSI2_BASE + I2C_ICR, ICR_IUE | ICR_SCLE | ICR_TB | Flags);
-  return I2cWaitIsr (WaitBit);
-}
-
-STATIC
-EFI_STATUS
-Pm822Write (
-  IN UINT8  Reg,
-  IN UINT8  Val
-  )
-{
-  EFI_STATUS  Status;
-
-  Status = I2cXfer (PM822_I2C_ADDR << 1, ICR_START, ISR_ITE);
-  if (!EFI_ERROR (Status)) {
-    Status = I2cXfer (Reg, 0, ISR_ITE);
-  }
-
-  if (!EFI_ERROR (Status)) {
-    Status = I2cXfer (Val, ICR_STOP, ISR_ITE);
-  }
-
-  return Status;
-}
-
-STATIC
-EFI_STATUS
-Pm822Read (
-  IN  UINT8  Reg,
-  OUT UINT8  *Val
-  )
-{
-  EFI_STATUS  Status;
-
-  Status = I2cXfer (PM822_I2C_ADDR << 1, ICR_START, ISR_ITE);
-  if (!EFI_ERROR (Status)) {
-    Status = I2cXfer (Reg, 0, ISR_ITE);
-  }
-
-  if (!EFI_ERROR (Status)) {
-    Status = I2cXfer ((PM822_I2C_ADDR << 1) | 1, ICR_START, ISR_ITE);
-  }
-
-  if (!EFI_ERROR (Status)) {
-    MmioWrite32 (
-      PXA988_TWSI2_BASE + I2C_ICR,
-      ICR_IUE | ICR_SCLE | ICR_TB | ICR_STOP | ICR_ACKNAK
-      );
-    Status = I2cWaitIsr (ISR_IRF);
-    *Val   = (UINT8)MmioRead32 (PXA988_TWSI2_BASE + I2C_IDBR);
-  }
-
-  return Status;
-}
 
 STATIC
 VOID
@@ -178,12 +78,9 @@ ResetShutdown (
 {
   UINT8  Val;
 
-  // Make sure the TWSI2 clock is running (S-Boot normally leaves it on)
-  MmioAndThenOr32 (APBCP_TWSI2, ~(UINT32)APBC_RST, APBC_APBCLK | APBC_FNCLK);
-
-  Pm822Write (PM822_GENERAL_USE_REG, PM822_SHUTDOWN_BY_POWEROFF);
-  if (!EFI_ERROR (Pm822Read (PM800_WAKEUP1, &Val))) {
-    Pm822Write (PM800_WAKEUP1, Val | PM800_SW_PDOWN);
+  Pm822Write (PM822_I2C_ADDR, PM822_GENERAL_USE_REG, PM822_SHUTDOWN_BY_POWEROFF);
+  if (!EFI_ERROR (Pm822Read (PM822_I2C_ADDR, PM800_WAKEUP1, &Val))) {
+    Pm822Write (PM822_I2C_ADDR, PM800_WAKEUP1, Val | PM800_SW_PDOWN);
   }
 
   MicroSecondDelay (1000000);

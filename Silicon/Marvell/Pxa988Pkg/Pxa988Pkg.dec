@@ -13,6 +13,9 @@
 [Includes]
   Include
 
+[LibraryClasses]
+  Pm822Lib|Include/Library/Pm822Lib.h
+
 [Guids]
   gPxa988TokenSpaceGuid = { 0x2e8c6b1a, 0x9f4d, 0x4c2b, { 0x8a, 0x61, 0x3d, 0x5f, 0x0e, 0x7a, 0x92, 0xb4 } }
 
@@ -25,5 +28,9 @@
   # Debug UART
   gPxa988TokenSpaceGuid.PcdDebugUartBase|0xD4017000|UINT32|0x00000010
   gPxa988TokenSpaceGuid.PcdDebugUartBaudRate|115200|UINT32|0x00000011
+  # Mirror SerialPortLib output (DEBUG() logs) onto the framebuffer, for
+  # devices without a UART. State lives in the page after the framebuffer.
+  gPxa988TokenSpaceGuid.PcdFbLogEnable|FALSE|BOOLEAN|0x00000012
+  gPxa988TokenSpaceGuid.PcdFbLogScale|1|UINT32|0x00000013
   # Which SDHCI controllers to expose (bit0 = SDH1 microSD, bit2 = SDH3 eMMC)
   gPxa988TokenSpaceGuid.PcdSdhciMask|0x5|UINT32|0x00000020

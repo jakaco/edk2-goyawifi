@@ -1,6 +1,6 @@
 ## @file
 #  Simple Text Input on the goyawifi hardware keys:
-#  Volume Up = Up, Volume Down = Down, Home = Enter.
+#  Volume Up = Up, Volume Down = Down, Home / Power = Enter.
 #
 #  SPDX-License-Identifier: BSD-2-Clause-Patent
 ##
@@ -25,6 +25,7 @@
   BaseMemoryLib
   DebugLib
   IoLib
+  Pm822Lib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
 

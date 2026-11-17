@@ -27,6 +27,7 @@
   DebugLib
   IoLib
   NonDiscoverableDeviceRegistrationLib
+  Pm822Lib
   TimerLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint

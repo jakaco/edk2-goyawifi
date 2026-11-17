@@ -124,9 +124,24 @@
 #define PXA988_SDH_SIZE             0x800
 
 //
-// 88PM822 PMIC on TWSI2
+// 88PM822 PMIC on TWSI2 (base page 0x30, power/regulator page 0x31)
 //
 #define PM822_I2C_ADDR              0x30
+#define PM822_POWER_I2C_ADDR        0x31
+#define PM800_STATUS_1              0x01
+#define   PM800_ONKEY_STS           BIT0
+#define PM800_LDO_ENA1_1            0x51
+#define   PM800_LDO4_EN             BIT3        // v_sd_3v3  (microSD vmmc)
+#define   PM800_LDO5_EN             BIT4        // v_mmc_3v3 (microSD vqmmc)
+
+//
+// Legacy ICU: its global IRQ/FIQ outputs must be masked, peripheral IRQs
+// reach the GIC SPIs directly (see 4.19 pxa988-dt.c)
+//
+#define PXA988_ICU_BASE             0xD4282000
+#define ICU_A9C0_GBL_INT_MSK        (PXA988_ICU_BASE + 0x114)
+#define ICU_A9C1_GBL_INT_MSK        (PXA988_ICU_BASE + 0x144)
+#define   ICU_GBL_IRQ_FIQ_MSK       0x3
 #define PM800_WAKEUP1               0x0D
 #define   PM800_SW_PDOWN            BIT5
 #define PM822_GENERAL_USE_REG       0xEF

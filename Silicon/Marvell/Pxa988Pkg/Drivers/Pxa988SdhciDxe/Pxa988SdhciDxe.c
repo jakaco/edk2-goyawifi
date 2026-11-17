@@ -9,6 +9,7 @@
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
 #include <Library/NonDiscoverableDeviceRegistrationLib.h>
+#include <Library/Pm822Lib.h>
 #include <Library/PcdLib.h>
 #include <Library/TimerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
@@ -271,6 +272,33 @@ Pxa988SdPinmux (
     );
 }
 
+/**
+  microSD power: vmmc = LDO4 (v_sd_3v3), vqmmc = LDO5 (v_mmc_3v3), both
+  "regulator-boot-on" in the 4.19 DT. Make sure they really are on; the
+  voltages S-Boot programmed are left alone.
+**/
+STATIC
+VOID
+Pxa988SdPower (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  UINT8       Ena;
+
+  Status = Pm822Read (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_1, &Ena);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Pxa988Sdhci: PMIC read failed: %r\n", Status));
+    return;
+  }
+
+  DEBUG ((DEBUG_INFO, "Pxa988Sdhci: LDO_ENA1_1 = 0x%02x\n", Ena));
+  if ((Ena & (PM800_LDO4_EN | PM800_LDO5_EN)) != (PM800_LDO4_EN | PM800_LDO5_EN)) {
+    Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_1, Ena | PM800_LDO4_EN | PM800_LDO5_EN);
+    MicroSecondDelay (10000);
+  }
+}
+
 EFI_STATUS
 EFIAPI
 Pxa988SdhciInitialize (
@@ -284,6 +312,9 @@ Pxa988SdhciInitialize (
 
   Pxa988SdhClockInit ();
   Pxa988SdPinmux ();
+  if ((FixedPcdGet32 (PcdSdhciMask) & BIT0) != 0) {
+    Pxa988SdPower ();
+  }
 
   for (Index = 0; Index < ARRAY_SIZE (mSdhci); Index++) {
     if ((FixedPcdGet32 (PcdSdhciMask) & mSdhci[Index].MaskBit) == 0) {

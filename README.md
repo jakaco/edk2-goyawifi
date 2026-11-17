@@ -4,8 +4,10 @@ UEFI firmware (TianoCore EDK2) for the **Samsung Galaxy Tab 3 Lite 7.0 Wi-Fi
 (SM-T110, `goyawifi`)**, built on the **Marvell PXA986** (PXA988 family,
 2x Cortex-A9, 1 GiB LPDDR2).
 
-> **Status: builds, not yet tested on hardware.** Expect to debug over the
-> UART first (see [Debugging](#debugging)).
+> **Status: builds, not yet tested on hardware.** The same boot path
+> (S-Boot -> KERNEL partition -> 0x10008000, zImage header) is proven by the
+> goyawifi U-Boot port, which runs on the tablet. DEBUG builds print their
+> log **on the screen**, so no UART is needed (see [Debugging](#debugging)).
 
 ## How it boots
 
@@ -87,8 +89,11 @@ flash a stock/LineageOS `boot.img` to `KERNEL`.
 | Timer | MmpTimerDxe + MmpTimerLib | 3.25 MHz APB timer, 10 ms tick |
 | Serial | PxaUartSerialPortLib | UART1 `0xD4017000`, 115200 8N1 |
 | Display | SimpleFbDxe | reuses S-Boot's splash buffer, no re-init |
-| Storage | SdMmcPciHcDxe via NonDiscoverablePciDeviceDxe | eMMC (SDH3, 26 MHz) and microSD (SDH1, 50 MHz, GPIO 11 CD) |
-| Input | GoyaWifiKeypadDxe | Vol Up / Vol Down / Home |
+| Storage | SdMmcPciHcDxe via NonDiscoverablePciDeviceDxe | eMMC (SDH3, 26 MHz, clk-delay 15) and microSD (SDH1, 50 MHz, GPIO 11 CD, LDO4/LDO5 enabled) |
+| Input | GoyaWifiKeypadDxe | Vol Up / Vol Down = Up / Down, Home / Power = Enter; keys taken out of keypad-controller mode with pad pull-ups (as the vendor kernel does) |
+| Interrupt routing | Pxa988PlatformLib | legacy ICU global IRQ/FIQ outputs masked (`0xD4282114/144`), as 4.19 `pxa988_dt_init_irq()` |
+| PMIC | Pm822Lib | polled TWSI2; base page `0x30`, power page `0x31` |
+| On-screen log | PxaUartSerialPortLib | DEBUG builds mirror the log to the framebuffer (8x19 font, 128x31) |
 | Reset / power off | Pxa988ResetSystemLib | WDT; 88PM822 `SW_PDOWN` over TWSI2 |
 | Variables | emulated (RAM) | not persistent across reboots |
 | OS hand-off | DtPlatformDxe | DT config table, no ACPI |
@@ -119,9 +124,17 @@ tested yet.
 
 ## Debugging
 
+* **Screen (DEBUG builds):** from the very first SEC line, everything printed
+  through `DEBUG()` also appears on the panel in white on black. The log
+  wraps to the top when it reaches the bottom; the blank line marks where the
+  newest output is. If the tablet hangs, a photo of the screen shows the last
+  thing that ran. The log state lives in the page right after the framebuffer
+  (`0x17258000`), so every module shares one cursor.
 * **UART:** UART1 is routed to micro-USB by the RT8973A MUIC with a
   **619 kOhm JIG** (ID to GND), at 3.3 V levels, 115200 8N1. DEBUG builds log
   everything from SEC onwards.
+* **Splash stays, nothing printed:** the image never reached SEC's
+  `ArmPlatformInitialize` (the first thing it does is clear the screen).
 * **Hangs before any output:** the most likely culprits are, in order:
   1. S-Boot rejecting or not jumping to the image (check the header at FD+0x24),
   2. S-Boot entering in a mode other than SVC/MMU off (PeilessSec expects the

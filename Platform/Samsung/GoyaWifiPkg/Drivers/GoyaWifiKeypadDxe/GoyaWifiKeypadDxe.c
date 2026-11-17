@@ -12,10 +12,13 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
+#include <Library/Pm822Lib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/SimpleTextIn.h>
 #include <Pxa988.h>
+
+#define KEY_GPIO_POWER  0xFFFFFFFF   // not a GPIO: 88PM822 ONKEY status
 
 typedef struct {
   UINT32    Gpio;
@@ -27,6 +30,7 @@ STATIC CONST KEY_MAP  mKeys[] = {
   { 1,  SCAN_UP,   CHAR_NULL            },   // Volume Up
   { 2,  SCAN_DOWN, CHAR_NULL            },   // Volume Down
   { 13, SCAN_NULL, CHAR_CARRIAGE_RETURN },   // Home
+  { KEY_GPIO_POWER, SCAN_NULL, CHAR_CARRIAGE_RETURN },   // Power
 };
 
 #pragma pack(1)
@@ -61,6 +65,13 @@ KeyIsDown (
   IN UINT32  Gpio
   )
 {
+  UINT8  Status;
+
+  if (Gpio == KEY_GPIO_POWER) {
+    return !EFI_ERROR (Pm822Read (PM822_I2C_ADDR, PM800_STATUS_1, &Status)) &&
+           ((Status & PM800_ONKEY_STS) != 0);
+  }
+
   return (MmioRead32 (GPIO_BANK (Gpio) + GPIO_GPLR) & (1U << (Gpio % 32))) == 0;
 }
 
@@ -181,7 +192,9 @@ KeypadInitialize (
 
   // Keys are GPIO inputs
   for (Index = 0; Index < ARRAY_SIZE (mKeys); Index++) {
-    MmioWrite32 (GPIO_BANK (mKeys[Index].Gpio) + GPIO_GCDR, 1U << (mKeys[Index].Gpio % 32));
+    if (mKeys[Index].Gpio != KEY_GPIO_POWER) {
+      MmioWrite32 (GPIO_BANK (mKeys[Index].Gpio) + GPIO_GCDR, 1U << (mKeys[Index].Gpio % 32));
+    }
   }
 
   mTextIn.Reset         = KeypadReset;

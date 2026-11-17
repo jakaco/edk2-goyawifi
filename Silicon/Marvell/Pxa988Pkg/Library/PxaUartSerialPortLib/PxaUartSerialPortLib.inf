@@ -15,6 +15,7 @@
 
 [Sources]
   PxaUartSerialPortLib.c
+  FbFont8x19.h
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -26,3 +27,9 @@
 [FixedPcd]
   gPxa988TokenSpaceGuid.PcdDebugUartBase
   gPxa988TokenSpaceGuid.PcdDebugUartBaudRate
+  gPxa988TokenSpaceGuid.PcdFbLogEnable
+  gPxa988TokenSpaceGuid.PcdFbLogScale
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase
+  gPxa988TokenSpaceGuid.PcdFrameBufferWidth
+  gPxa988TokenSpaceGuid.PcdFrameBufferHeight
+  gPxa988TokenSpaceGuid.PcdFrameBufferStride

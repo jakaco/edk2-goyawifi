@@ -130,6 +130,7 @@
   TimerLib|Silicon/Marvell/Pxa988Pkg/Library/MmpTimerLib/MmpTimerLib.inf
   SerialPortLib|Silicon/Marvell/Pxa988Pkg/Library/PxaUartSerialPortLib/PxaUartSerialPortLib.inf
   ResetSystemLib|Silicon/Marvell/Pxa988Pkg/Library/Pxa988ResetSystemLib/Pxa988ResetSystemLib.inf
+  Pm822Lib|Silicon/Marvell/Pxa988Pkg/Library/Pm822Lib/Pm822Lib.inf
   PlatformPeiLib|Platform/Samsung/GoyaWifiPkg/Library/GoyaWifiPlatformPeiLib/GoyaWifiPlatformPeiLib.inf
   MemoryInitPeiLib|ArmPlatformPkg/MemoryInitPei/MemoryInitPeiLib.inf
 
@@ -156,6 +157,8 @@
 
 [LibraryClasses.common.DXE_RUNTIME_DRIVER]
   MemoryAllocationLib|MdePkg/Library/UefiMemoryAllocationLib/UefiMemoryAllocationLib.inf
+  # Never touch the UART/framebuffer once the OS owns the machine
+  DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
   VariablePolicyLib|MdeModulePkg/Library/VariablePolicyLib/VariablePolicyLibRuntimeDxe.inf
 
 ################################################################################
@@ -220,6 +223,10 @@
   gPxa988TokenSpaceGuid.PcdFrameBufferHeight|600
   gPxa988TokenSpaceGuid.PcdFrameBufferStride|1024
   gPxa988TokenSpaceGuid.PcdSdhciMask|0x5
+!if $(TARGET) == DEBUG
+  # No UART on most test devices: mirror the debug log onto the screen
+  gPxa988TokenSpaceGuid.PcdFbLogEnable|TRUE
+!endif
 
   # Device tree (no ACPI on 32-bit ARM Linux)
   gEmbeddedTokenSpaceGuid.PcdDefaultDtPref|TRUE

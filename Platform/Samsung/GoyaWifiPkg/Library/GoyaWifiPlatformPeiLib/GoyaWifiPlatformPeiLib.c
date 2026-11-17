@@ -47,12 +47,12 @@ PlatformPeim (
       );
   }
 
-  // Bootloader splash = GOP framebuffer
+  // Bootloader splash = GOP framebuffer, plus one page of log state
   FbSize = ALIGN_VALUE (
              (UINT64)FixedPcdGet32 (PcdFrameBufferStride) * 4 *
              FixedPcdGet32 (PcdFrameBufferHeight),
              EFI_PAGE_SIZE
-             );
+             ) + EFI_PAGE_SIZE;
   BuildMemoryAllocationHob (
     FixedPcdGet32 (PcdFrameBufferBase),
     FbSize,

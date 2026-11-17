@@ -9,6 +9,7 @@
 #include <Library/ArmPlatformLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
+#include <Library/PcdLib.h>
 #include <Library/SerialPortLib.h>
 #include <Ppi/ArmMpCoreInfo.h>
 #include <Pxa988.h>
@@ -60,7 +61,25 @@ ArmPlatformInitialize (
   }
 
   Pxa988L2Disable ();
+
+  //
+  // Peripheral IRQs go straight to the GIC SPIs; the legacy ICU must not
+  // also drive the core nIRQ/nFIQ lines (same as Linux pxa988_dt_init_irq)
+  //
+  MmioWrite32 (ICU_A9C0_GBL_INT_MSK, ICU_GBL_IRQ_FIQ_MSK);
+  MmioWrite32 (ICU_A9C1_GBL_INT_MSK, ICU_GBL_IRQ_FIQ_MSK);
+
+  // Start a fresh on-screen log for this boot (see PxaUartSerialPortLib)
+  if (FixedPcdGetBool (PcdFbLogEnable)) {
+    MmioWrite32 (
+      FixedPcdGet32 (PcdFrameBufferBase) +
+      ALIGN_VALUE (FixedPcdGet32 (PcdFrameBufferStride) * 4 * FixedPcdGet32 (PcdFrameBufferHeight), 0x1000),
+      0
+      );
+  }
+
   SerialPortInitialize ();
+  DEBUG ((DEBUG_ERROR, "\ngoyawifi UEFI (PXA986) - SEC, built " __DATE__ " " __TIME__ "\n"));
 
   return RETURN_SUCCESS;
 }

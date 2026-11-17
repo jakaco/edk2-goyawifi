@@ -26,4 +26,5 @@
   BaseMemoryLib
   DebugLib
   IoLib
+  Pm822Lib
   TimerLib
