@@ -304,6 +304,7 @@
   #
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SdhciDxe/Pxa988SdhciDxe.inf
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SmpDxe/Pxa988SmpDxe.inf
+  Platform/Samsung/GoyaWifiPkg/Application/GoyaWifiDiagApp/GoyaWifiDiagApp.inf
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988UsbDxe/Pxa988UsbDxe.inf
   Silicon/Marvell/Pxa988Pkg/Drivers/ChipIdeaEhciDxe/ChipIdeaEhciDxe.inf
   MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf

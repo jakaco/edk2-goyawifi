@@ -395,6 +395,10 @@ AddOutput (
     ));
 }
 
+STATIC CONST EFI_GUID  mGoyaWifiDiagFileGuid = {
+  0x8d3f5a72, 0x1e46, 0x4b9c, { 0xa0, 0x7d, 0xc2, 0x5e, 0x6f, 0x91, 0xb3, 0xa4 }
+};
+
 STATIC
 VOID
 PlatformRegisterFvBootOption (
@@ -1035,6 +1039,12 @@ PlatformBootManagerAfterConsole (
   Key.ScanCode    = SCAN_NULL;
   Key.UnicodeChar = L's';
   PlatformRegisterFvBootOption (&gUefiShellFileGuid, L"UEFI Shell", 0, &Key);
+
+  //
+  // goyawifi: hardware diagnostics (Application/GoyaWifiDiagApp)
+  //
+  Key.UnicodeChar = L'd';
+  PlatformRegisterFvBootOption (&mGoyaWifiDiagFileGuid, L"GoyaWifi Diagnostics", 0, &Key);
 }
 
 /**

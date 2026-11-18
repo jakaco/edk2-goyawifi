@@ -1,0 +1,51 @@
+## @file
+#  GoyaWifiDiag: read-only hardware diagnostics for the Galaxy Tab 3 Lite
+#  (goyawifi, PXA986), started from the boot manager menu.
+#
+#  Inspired by RossaDiag (notnoelchannel2/rossadiag) for the Galaxy Core Prime.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = GoyaWifiDiag
+  FILE_GUID                      = 8d3f5a72-1e46-4b9c-a07d-c25e6f91b3a4
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = GoyaWifiDiagMain
+
+[Sources]
+  GoyaWifiDiagApp.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  BaseMemoryLib
+  IoLib
+  MemoryAllocationLib
+  PcdLib
+  Pm822Lib
+  PrintLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiGraphicsOutputProtocolGuid
+  gEfiUsbIoProtocolGuid
+
+[Guids]
+  gPxa988TokenSpaceGuid
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase
+  gPxa988TokenSpaceGuid.PcdSdhciMask
