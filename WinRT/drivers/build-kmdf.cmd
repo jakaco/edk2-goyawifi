@@ -16,9 +16,9 @@ cd /d %~dp0%N% || exit /b 1
 set KM=
 set KMINOR=
 for %%V in (11 13 15 17 19 21 23 25 27 29 31) do (
-  if not defined KM if exist "%DDK_INC_PATH%\wdf\kmdf\1.%%V" (set KM=%DDK_INC_PATH%\wdf\kmdf\1.%%V& set KMINOR=%%V)
+  if not defined KM if exist "%DDK_INC_PATH%\..\wdf\kmdf\1.%%V" (set KM=%DDK_INC_PATH%\..\wdf\kmdf\1.%%V& set KMINOR=%%V)
 )
-if not defined KM (echo No KMDF headers under %DDK_INC_PATH%\wdf\kmdf & exit /b 1)
+if not defined KM (echo No KMDF headers under %DDK_INC_PATH%\..\wdf\kmdf & exit /b 1)
 if not "%KMINOR%"=="11" echo WARNING: KMDF 1.11 ^(Windows 8.0^) not in this WDK, building against KMDF 1.%KMINOR%.
 set KMLIB=%DDK_INC_PATH%\..\..\Lib\wdf\kmdf\arm\1.%KMINOR%
 for /d %%D in ("%DDK_INC_PATH%\..\..\Lib\wdf\kmdf\arm\1.%KMINOR%") do set KMLIB=%%~fD

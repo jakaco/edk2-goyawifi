@@ -1,5 +1,7 @@
 # Installs the Windows 10 2004 (19041) SDK + matching WDK on a GitHub Windows runner.
 #
+# The windows-2022 runner image already ships WDK 19041 (KMDF headers live in Include\wdf\kmdf, NOT under
+# the versioned include folder) so normally nothing is installed. The install path below is only a fallback.
 # Lessons from the CI logs:
 #  * Chocolatey's community feed returns 503 now and then -> retry it, then fall back to
 #    Microsoft's own SDK installer.
@@ -8,7 +10,7 @@
 #    after about a minute and installs nothing. So the matching SDK is installed first, always.
 $ErrorActionPreference = 'Stop'
 $kits  = "${env:ProgramFiles(x86)}\Windows Kits\10"
-$wdkOk = { (Test-Path "$kits\Include\10.0.19041.0\km\ntddk.h") -and (Test-Path "$kits\Include\10.0.19041.0\wdf\kmdf") }
+$wdkOk = { (Test-Path "$kits\Include\10.0.19041.0\km\ntddk.h") -and (Test-Path "$kits\Include\wdf\kmdf\1.11\wdf.h") }
 
 function Get-File($url, $out) {
   for ($i = 1; $i -le 5; $i++) {
@@ -55,7 +57,7 @@ if (-not (& $wdkOk)) {
 } else { Write-Host "WDK 19041 already present" }
 
 Write-Host "KMDF headers:"
-Get-ChildItem "$kits\Include\10.0.19041.0\wdf\kmdf" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+Get-ChildItem "$kits\Include\wdf\kmdf" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
 Write-Host "ARM kernel libs of interest:"
 Get-ChildItem "$kits\Lib\10.0.19041.0" -Recurse -Include halextlib.lib,gpioclx*.lib,spbcx*.lib,wdfldr.lib,wdfdriverentry.lib |
   Where-Object { $_.FullName -match '\\arm\\' } | ForEach-Object { $_.FullName }
