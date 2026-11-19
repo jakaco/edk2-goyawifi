@@ -32,7 +32,7 @@ if (-not (& $wdkOk)) {
   Wait-For $wdkOk 'WDK' 20
 } else { Write-Host "WDK 19041 already present" }
 
-Get-ChildItem "$kits\Include\10.0.19041.0\wdf\kmdf" | ForEach-Object { $_.Name }
+Get-ChildItem "$kits\Include\10.0.19041.0\wdf\kmdf" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
 Write-Host "ARM kernel libs of interest:"
 Get-ChildItem "$kits\Lib\10.0.19041.0" -Recurse -Include halextlib.lib,gpioclx*.lib,spbcx*.lib,wdfldr.lib,wdfdriverentry.lib |
   Where-Object { $_.FullName -match '\\arm\\' } | ForEach-Object { $_.FullName }
