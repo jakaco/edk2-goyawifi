@@ -242,7 +242,7 @@ static NTSTATUS OnTargetConnect(WDFDEVICE Controller, SPBTARGET Target)
 
 static VOID Finish(SPBREQUEST Request, NTSTATUS Status, size_t Info)
 {
-    WdfRequestSetInformation(Request, Info);
+    WdfRequestSetInformation((WDFREQUEST)Request, Info);
     SpbRequestComplete(Request, Status);
 }
 
@@ -336,8 +336,8 @@ static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
 {
     PGOYA_I2C I = GetI2c(Device);
     UNREFERENCED_PARAMETER(Translated);
-    if (I->Regs) { MmUnmapIoSpace(I->Regs, 0x1000, 0); I->Regs = NULL; }
-    if (I->ClockReg) { MmUnmapIoSpace(I->ClockReg, 4, 0); I->ClockReg = NULL; }
+    if (I->Regs) { MmUnmapIoSpace(I->Regs, 0x1000); I->Regs = NULL; }
+    if (I->ClockReg) { MmUnmapIoSpace(I->ClockReg, 4); I->ClockReg = NULL; }
     return STATUS_SUCCESS;
 }
 
