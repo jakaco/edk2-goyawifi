@@ -15,7 +15,7 @@
 */
 #include <ntddk.h>
 #include <wdf.h>
-#include <spbcx.h>
+#include <spb.h>
 #include <reshub.h>
 
 #define GOYA_I2C_TAG 'c2oG'

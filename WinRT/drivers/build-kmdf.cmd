@@ -32,7 +32,13 @@ findstr /n /i /c:"pragma comment" /c:"Stubs" /c:"GpioClxFunctions" %INCV%\km\gpi
 echo -------------------------------------------------------
 
 set DEFS=/DARM /D_ARM_ /DNDEBUG /D_WIN32_WINNT=0x0602 /DNTDDI_VERSION=0x06020000 /DKMDF_VERSION_MAJOR=1 /DKMDF_VERSION_MINOR=%KMINOR% /DWINNT=1
-set INC=/I%INCV% /I%INCV%\km /I%INCV%\km\crt /I%INCV%\shared /I%KM%
+echo ---- spbcx.h locations ----
+dir /s /b %KITS%\Include\10.0.19041.0\spbcx.h %KITS%\Include\10.0.19041.0\spb.h 2>nul
+set SPBINC=
+for /d %%D in (%INCV%\km\spb\*) do set SPBINC=/I%%D
+if exist %INCV%\km\spb set SPBINC=%SPBINC% /I%INCV%\km\spb
+echo SPBINC=%SPBINC%
+set INC=/I%INCV% /I%INCV%\km /I%INCV%\km\crt /I%INCV%\shared /I%KM% %SPBINC%
 cl /nologo /c /kernel /GS- /Oi /Zi /W3 /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c || exit /b 1
 
 set EXTRA=
