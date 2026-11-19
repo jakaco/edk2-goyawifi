@@ -1,36 +1,52 @@
 @echo off
 rem Builds one Goya KMDF driver (ARM32) from the command line with the Windows 10 19041 WDK.
-rem   build-kmdf.cmd goyagpio [extra-lib ...]
-rem Run from an ARM-targeting VS developer prompt (vcvarsall x86_arm) with DDK_INC_PATH and
-rem LIB set as in .github/workflows/goya-drivers.yml.
+rem   build-kmdf.cmd goyagpio
+rem Run from an ARM-targeting VS developer prompt (vcvarsall x86_arm) with DDK_INC_PATH set to
+rem ...\Windows Kits\10\Include\10.0.19041.0, as in .github\workflows\goya-drivers.yml.
 rem
-rem KMDF version: Windows 8.0 ships KMDF 1.11. The script uses 1.11 if this WDK has it,
-rem otherwise the lowest version it has and prints a warning (1.13 = Win8.1, 1.15 = Win10 1507:
-rem such a build will NOT load on 8.0 RT; that case needs the 8.0/8.1 WDK).
-setlocal EnableDelayedExpansion
+rem KMDF version: Windows 8.0 ships KMDF 1.11; the 19041 WDK has the 1.11 headers/libs, so the
+rem driver is built against 1.11 and can load on 8.0 RT (if nothing else it uses is newer).
+rem
+rem NOTE: "%ProgramFiles(x86)%" contains a ")" which breaks cmd's parenthesised blocks, so every
+rem path is first converted to its 8.3 short form (no parentheses, no spaces).
+setlocal EnableExtensions
 set N=%1
-if "%N%"=="" (echo usage: build-kmdf.cmd name & exit /b 1)
-if not defined DDK_INC_PATH (echo run from a WDK/VS ARM prompt & exit /b 1)
-cd /d %~dp0%N% || exit /b 1
+if "%N%"=="" goto usage
+if not defined DDK_INC_PATH goto nowdk
+for %%I in ("%DDK_INC_PATH%") do set "INCV=%%~sI"
+for %%I in ("%DDK_INC_PATH%\..\..") do set "KITS=%%~sI"
+for %%I in ("%~dp0%N%") do set "SRC=%%~sI"
+cd /d %SRC% || exit /b 1
 
-set KM=
-set KMINOR=
-for %%V in (11 13 15 17 19 21 23 25 27 29 31) do (
-  if not defined KM if exist "%DDK_INC_PATH%\..\wdf\kmdf\1.%%V" (set KM=%DDK_INC_PATH%\..\wdf\kmdf\1.%%V& set KMINOR=%%V)
-)
-if not defined KM (echo No KMDF headers under %DDK_INC_PATH%\..\wdf\kmdf & exit /b 1)
-if not "%KMINOR%"=="11" echo WARNING: KMDF 1.11 ^(Windows 8.0^) not in this WDK, building against KMDF 1.%KMINOR%.
-set KMLIB=%DDK_INC_PATH%\..\..\Lib\wdf\kmdf\arm\1.%KMINOR%
-for /d %%D in ("%DDK_INC_PATH%\..\..\Lib\wdf\kmdf\arm\1.%KMINOR%") do set KMLIB=%%~fD
+set KMINOR=11
+set KM=%KITS%\Include\wdf\kmdf\1.%KMINOR%
+set KMLIB=%KITS%\Lib\wdf\kmdf\arm\1.%KMINOR%
+if not exist %KM%\wdf.h (echo KMDF 1.%KMINOR% headers missing: %KM% & exit /b 1)
+if not exist %KMLIB% (echo KMDF 1.%KMINOR% libs missing: %KMLIB% & exit /b 1)
+
+echo ---- libraries mentioning gpio / spb / wdf for ARM ----
+dir /s /b %KITS%\Lib\10.0.19041.0\km\arm\*gpio*.lib %KITS%\Lib\10.0.19041.0\km\arm\*spb*.lib 2>nul
+dir /b %KMLIB%
+echo ---- how gpioclx.h binds ----
+findstr /n /i /c:"pragma comment" /c:"Stubs" /c:"GpioClxFunctions" %INCV%\km\gpioclx.h 2>nul
+echo -------------------------------------------------------
 
 set DEFS=/DARM /D_ARM_ /DNDEBUG /D_WIN32_WINNT=0x0602 /DNTDDI_VERSION=0x06020000 /DKMDF_VERSION_MAJOR=1 /DKMDF_VERSION_MINOR=%KMINOR% /DWINNT=1
-set INC=/I"%DDK_INC_PATH%" /I"%DDK_INC_PATH%\km" /I"%DDK_INC_PATH%\km\crt" /I"%DDK_INC_PATH%\shared" /I"%KM%"
+set INC=/I%INCV% /I%INCV%\km /I%INCV%\km\crt /I%INCV%\shared /I%KM%
 cl /nologo /c /kernel /Gz /GS- /Oi /Zi /W3 /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c || exit /b 1
 
 set EXTRA=
-rem GpioClx / SpbCx import libraries, wherever the WDK keeps them
-for %%L in (gpioclx.lib SpbCx.lib) do for /f "delims=" %%P in ('dir /s /b "%DDK_INC_PATH%\..\..\Lib\%%L" 2^>nul ^| findstr /i "arm" ^| findstr /v /i "arm64"') do set EXTRA=!EXTRA! "%%P"
+if exist %KITS%\Lib\10.0.19041.0\km\arm\gpio\1.0\gpioclxstubs.lib set EXTRA=%KITS%\Lib\10.0.19041.0\km\arm\gpio\1.0\gpioclxstubs.lib
+if exist %KITS%\Lib\10.0.19041.0\km\arm\spb\1.0\spbcxstubs.lib set EXTRA=%EXTRA% %KITS%\Lib\10.0.19041.0\km\arm\spb\1.0\spbcxstubs.lib
 echo extra libs: %EXTRA%
-link /nologo /DRIVER /NODEFAULTLIB /SUBSYSTEM:NATIVE /ENTRY:FxDriverEntry /INTEGRITYCHECK /LIBPATH:"%KMLIB%" ^
-     /OUT:%N%.sys %N%.obj WdfDriverEntry.lib WdfLdr.lib ntoskrnl.lib hal.lib wmilib.lib BufferOverflowFastFailK.lib libcntpr.lib %EXTRA% %2 %3 %4 || exit /b 1
+link /nologo /DRIVER /NODEFAULTLIB /SUBSYSTEM:NATIVE /ENTRY:FxDriverEntry /INTEGRITYCHECK /LIBPATH:%KMLIB% /LIBPATH:%KITS%\Lib\10.0.19041.0\km\arm ^
+     /OUT:%N%.sys %N%.obj WdfDriverEntry.lib WdfLdr.lib ntoskrnl.lib hal.lib wmilib.lib BufferOverflowFastFailK.lib libcntpr.lib %EXTRA% || exit /b 1
 echo built %N%.sys ^(KMDF 1.%KMINOR%^)
+exit /b 0
+
+:usage
+echo usage: build-kmdf.cmd name
+exit /b 1
+:nowdk
+echo run from a WDK/VS ARM prompt with DDK_INC_PATH set
+exit /b 1
