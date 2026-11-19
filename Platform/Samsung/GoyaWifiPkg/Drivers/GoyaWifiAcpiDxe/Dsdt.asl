@@ -22,6 +22,20 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
         Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { 45 }
       })
     }
+    // GPIO controller: 4 banks x 32 pins, one muxed interrupt (SPI 49 = GIC 81). GpioClx wants one
+    // interrupt resource per bank, so the shared line is listed once per bank.
+    Device (GPI0) {
+      Name (_HID, "MRVL0003")
+      Name (_UID, 0)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        Memory32Fixed (ReadWrite, 0xD4019000, 0x1000)
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 81 }
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 81 }
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 81 }
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 81 }
+      })
+    }
     // microSD host (SDH1). PNP0D40 = "SDA standard compliant SD host controller": the inbox
     // sdport/sdbus stack binds to it with no custom driver. Marvell quirks are untested.
     // The firmware has already powered the slot (88PM822 LDO4/LDO5) and enabled the clocks.

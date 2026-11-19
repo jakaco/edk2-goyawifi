@@ -15,3 +15,8 @@ ARM32; the media comes from your build, e.g. 8520). These scripts never fetch Wi
 What to expect at first: a boot with only HalExtMmpTimer (no input drivers) is the first milestone. The screen comes from
 the UEFI framebuffer (BasicDisplay); WinPE runs from RAM so it needs no storage driver. Without touch/keys you will only see it
 run; `autorun.cmd` writing `diag.txt` to the card proves it got to the shell (needs the SD host driver, see the driver plan).
+
+## Drivers from CI
+`goya-drivers.yml` builds each driver under `WinRT/drivers/<name>/` and uploads `<name>-arm` (sys + inf).
+Unzip an artifact so the files end up in `WinRT/drivers/<name>/out/` (or next to `make-goya-sd.cmd`); the script adds them
+with DISM. Current drivers: `goyagpio` (GpioClx, ACPI `MRVL0003`). Planned: `goyai2c` (SpbCx), `goyatouch`, `goyakeys`.
