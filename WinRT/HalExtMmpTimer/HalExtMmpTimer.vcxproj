@@ -137,6 +137,7 @@ sign -hal $(OutDir)$(TARGETNAME)$(TARGETEXT)</Command>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MmpTimer.h" />
+    <ClInclude Include="HalExtCompat.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>

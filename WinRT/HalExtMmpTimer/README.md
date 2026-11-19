@@ -13,14 +13,19 @@ What it does
 - CSRT descriptor UID 1, TimerType 2: counter 1, free running, read through the CVWR latch (3 reads), same as
   the firmware `MmpTimerLib`. Clock 3.25 MHz.
 
-Build (Windows)
-- VS + WDK with ARM driver support; open `HalExtMmpTimer.vcxproj`, config Release|ARM. Entry point
-  `HalExtensionInit`, link `halextlib.lib`. Needs `/SUBSYSTEM:NATIVE` and `/INTEGRITYCHECK`.
-- The template targets the Windows 10 WDK. `TIMER_INITIALIZATION_BLOCK` fields used here (`Interrupt.Gsi`,
-  `TIMER_ALWAYS_ON`, `INITIALIZE_TIMER_HEADER`) may not exist in the Windows 8.0 `nthalext.h`; if building
-  against the 8.0 WDK, adapt the block to that header's layout.
-- Windows 8.0 loads HAL extensions only if signed or test-signing is on; expect to need
-  `bcdedit /set testsigning on` and `nointegritychecks` (or an integrity-check-patched DLL).
+Build (Windows) - one source, two WDKs
+- `build.cmd w10`: Windows 10 22H2 WDK (10.0.19041, the last WDK line that can still build ARM32 kernel code;
+  Windows 11 WDKs cannot). Run from an ARM-targeting VS developer prompt. `HalExtMmpTimer.vcxproj` also works
+  with this WDK (Release|ARM).
+- `build.cmd w8`: Windows 8.0 WDK, from its ARM build environment. Adds `/DHALEXT_TARGET_WIN8=1`.
+- `HalExtCompat.h` gives fallbacks only for names an older `nthalext.h` lacks (`READ/WRITE_REGISTER_NOFENCE_ULONG`,
+  `TIMER_ALWAYS_ON`, `TIMER_GENERATES_LINE_BASED_INTERRUPTS`); the newer header's own definitions always win. On
+  8.0 without `TIMER_ALWAYS_ON` the tick timer is just not flagged always-on.
+- Still unverified: the layout of `TIMER_INITIALIZATION_BLOCK` in the 8.0 header (`Interrupt.Gsi`,
+  `INITIALIZE_TIMER_HEADER`). If the 8.0 compile fails there, that block is the only part to adapt.
+- Neither path was compiled by me (no Windows toolchain here). `build.cmd` flags follow the imx-iotcore project
+  settings and standard kernel-mode DLL flags, so a link or flag error is likely on the first run; send me the log.
+- Unsigned DLL: Windows needs `bcdedit /set testsigning on` (and `nointegritychecks` on 8.0 RT) to load it.
 
 Install: the INF matches `ACPI\MRVL0002` (device `TMR0` in the DSDT) and registers the DLL in the OS
 extension database under `VEN_MRVL&DEV_0001`. For an offline WinPE image, copy the DLL to `System32` and add the

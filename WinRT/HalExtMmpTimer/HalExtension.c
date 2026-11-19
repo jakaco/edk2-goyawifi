@@ -19,6 +19,7 @@ Abstract:
 */
 
 #include <nthalext.h>
+#include "HalExtCompat.h"
 #include "MmpTimer.h"
 
 //
