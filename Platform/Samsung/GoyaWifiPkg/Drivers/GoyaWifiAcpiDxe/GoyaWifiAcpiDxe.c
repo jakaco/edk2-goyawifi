@@ -109,7 +109,7 @@ typedef struct {
 typedef struct {
   EFI_ACPI_DESCRIPTION_HEADER  Header;
   CSRT_GROUP                   Group;
-  CSRT_TIMER_DESC              Timer;
+  CSRT_TIMER_DESC              Timer[2];    // [0] counter 0 event timer, [1] counter 1 free-running counter
 } CSRT_TABLE;
 
 //
@@ -190,21 +190,23 @@ BuildTables (
 
   // CSRT
   FILL_HEADER (mCsrt.Header, SIGNATURE_32 ('C','S','R','T'), sizeof (mCsrt), 0);
-  mCsrt.Group.Length           = sizeof (CSRT_GROUP) + sizeof (CSRT_TIMER_DESC);
+  mCsrt.Group.Length           = sizeof (CSRT_GROUP) + 2 * sizeof (CSRT_TIMER_DESC);
   mCsrt.Group.VendorId         = SIGNATURE_32 ('M','R','V','L');
   mCsrt.Group.DeviceId         = 0x0001;
   mCsrt.Group.Revision         = 0;
   mCsrt.Group.SharedInfoLength = 0;
-  mCsrt.Timer.Header.Length    = sizeof (CSRT_TIMER_DESC);
-  mCsrt.Timer.Header.Type      = 2;       // CSRT_RD_TYPE_TIMER (from spec memory, verify)
-  mCsrt.Timer.Header.Subtype   = 1;       // CSRT_RD_SUBTYPE_TIMER (verify)
-  mCsrt.Timer.Header.Uid       = 0;
-  mCsrt.Timer.TimerType        = 1;       // MMP APB timer
-  mCsrt.Timer.ClockSource      = 3;       // FNCLKSEL 3 (3.25 MHz)
-  mCsrt.Timer.Frequency        = TIMER0_FREQ;
-  mCsrt.Timer.FrequencyScale   = 1;
-  mCsrt.Timer.BaseAddress      = PXA988_TIMER0_BASE;
-  mCsrt.Timer.Interrupt        = TIMER0_IRQ;
+  for (I = 0; I < 2; I++) {
+    mCsrt.Timer[I].Header.Length  = sizeof (CSRT_TIMER_DESC);
+    mCsrt.Timer[I].Header.Type    = 2;       // CSRT_RD_TYPE_TIMER (from spec memory, verify)
+    mCsrt.Timer[I].Header.Subtype = 1;       // CSRT_RD_SUBTYPE_TIMER (verify)
+    mCsrt.Timer[I].Header.Uid     = (UINT32)I;
+    mCsrt.Timer[I].TimerType      = (UINT32)(I + 1);   // 1 = MMP event (counter 0), 2 = MMP counter (counter 1)
+    mCsrt.Timer[I].ClockSource    = 3;       // FNCLKSEL 3 (3.25 MHz)
+    mCsrt.Timer[I].Frequency      = TIMER0_FREQ;
+    mCsrt.Timer[I].FrequencyScale = 1;
+    mCsrt.Timer[I].BaseAddress    = PXA988_TIMER0_BASE;
+    mCsrt.Timer[I].Interrupt      = (I == 0) ? TIMER0_IRQ : 0;
+  }
 
   // SPCR (UART1)
   FILL_HEADER (mSpcr.Header, SIGNATURE_32 ('S','P','C','R'), sizeof (mSpcr), 2);

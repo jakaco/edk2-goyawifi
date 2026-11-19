@@ -11,6 +11,17 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
       Name (_HID, "ACPI0007")
       Name (_UID, 1)
     }
+    // Marvell MMP timer 0 HAL extension is matched by CSRT; this device lets the
+    // INF install it (ACPI\MRVL0002)
+    Device (TMR0) {
+      Name (_HID, "MRVL0002")
+      Name (_UID, 0)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        Memory32Fixed (ReadWrite, 0xD4014000, 0x1000)
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { 45 }
+      })
+    }
     // UART1 (16550-compatible PXA UART), SPI 27 = GIC IRQ 59
     Device (UAR1) {
       Name (_HID, "MRVL0001")
