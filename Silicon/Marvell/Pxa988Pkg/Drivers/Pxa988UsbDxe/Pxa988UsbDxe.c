@@ -172,6 +172,18 @@ Pxa988UsbInitialize (
   MmioWrite32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE, USBMODE_CM_HOST);
   Log ("USBMODE=0x%08x\n", MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE));
 
+  //
+  // Hardware finding (test 5/6): the core can stay in device mode (CM=2). If the EHCI
+  // driver then sets USBCMD.RS, the controller connects its D+ pull-up and a PC on the
+  // other end of the cable reports "Unknown USB Device (Device Descriptor Request
+  // Failed)", because nothing answers the enumeration. So: no host mode, no EHCI, and
+  // the pull-up stays off (RS was cleared above).
+  //
+  if ((MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE) & 3) != USBMODE_CM_HOST) {
+    Log ("host mode not accepted by the controller: EHCI not registered (no fake USB attach)\n");
+    return EFI_SUCCESS;
+  }
+
   Handle = NULL;
   Status = RegisterNonDiscoverableMmioDevice (
              NonDiscoverableDeviceTypeEhci,
