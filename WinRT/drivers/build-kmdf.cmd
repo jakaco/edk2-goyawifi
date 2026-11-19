@@ -33,9 +33,10 @@ echo -------------------------------------------------------
 
 set DEFS=/DARM /D_ARM_ /DNDEBUG /D_WIN32_WINNT=0x0602 /DNTDDI_VERSION=0x06020000 /DKMDF_VERSION_MAJOR=1 /DKMDF_VERSION_MINOR=%KMINOR% /DWINNT=1
 set INC=/I%INCV% /I%INCV%\km /I%INCV%\km\crt /I%INCV%\shared /I%KM%
-cl /nologo /c /kernel /Gz /GS- /Oi /Zi /W3 /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c || exit /b 1
+cl /nologo /c /kernel /GS- /Oi /Zi /W3 /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c || exit /b 1
 
 set EXTRA=
+if exist %KITS%\Lib\10.0.19041.0\km\arm\msgpioclxstub.lib set EXTRA=%KITS%\Lib\10.0.19041.0\km\arm\msgpioclxstub.lib
 if exist %KITS%\Lib\10.0.19041.0\km\arm\gpio\1.0\gpioclxstubs.lib set EXTRA=%KITS%\Lib\10.0.19041.0\km\arm\gpio\1.0\gpioclxstubs.lib
 if exist %KITS%\Lib\10.0.19041.0\km\arm\spb\1.0\spbcxstubs.lib set EXTRA=%EXTRA% %KITS%\Lib\10.0.19041.0\km\arm\spb\1.0\spbcxstubs.lib
 echo extra libs: %EXTRA%

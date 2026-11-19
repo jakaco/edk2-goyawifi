@@ -121,10 +121,11 @@ static NTSTATUS GoyaStartController(PVOID Context, BOOLEAN Restore, WDF_POWER_DE
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS GoyaStopController(PVOID Context, WDF_POWER_DEVICE_STATE Target)
+static NTSTATUS GoyaStopController(PVOID Context, BOOLEAN Save, WDF_POWER_DEVICE_STATE Target)
 {
     PGOYA_GPIO g = (PGOYA_GPIO)Context;
     ULONG b;
+    UNREFERENCED_PARAMETER(Save);
     UNREFERENCED_PARAMETER(Target);
     for (b = 0; b < GPIO_BANKS; b++) {
         RegWrite(g, b, GRER, 0);
