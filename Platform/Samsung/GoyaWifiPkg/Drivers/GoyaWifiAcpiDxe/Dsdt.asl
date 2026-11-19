@@ -36,6 +36,18 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
         Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 81 }
       })
     }
+    // TWSI1 (I2C bus 1): touchscreen (Zinitix BT532 @0x20) and display bridge. SpbCx controller driver
+    // goyai2c; polled, so no interrupt. Second memory range = APBC_TWSI1 clock/reset register.
+    // TWSI2 (PMIC) is deliberately not exposed: the firmware's runtime services use it.
+    Device (I2C1) {
+      Name (_HID, "MRVL0004")
+      Name (_UID, 1)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        Memory32Fixed (ReadWrite, 0xD4010800, 0x1000)
+        Memory32Fixed (ReadWrite, 0xD4015060, 0x4)
+      })
+    }
     // microSD host (SDH1). PNP0D40 = "SDA standard compliant SD host controller": the inbox
     // sdport/sdbus stack binds to it with no custom driver. Marvell quirks are untested.
     // The firmware has already powered the slot (88PM822 LDO4/LDO5) and enabled the clocks.
