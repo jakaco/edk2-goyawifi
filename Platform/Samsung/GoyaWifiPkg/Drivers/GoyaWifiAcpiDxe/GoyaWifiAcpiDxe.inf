@@ -1,0 +1,34 @@
+## @file
+#  Installs the minimal ACPI 5.0 tables (hardware-reduced) for Windows RT.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = GoyaWifiAcpiDxe
+  FILE_GUID                      = 4c1f6a9e-2b57-4d83-9e0a-7a3d5c8b1f24
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = GoyaWifiAcpiEntry
+
+[Sources]
+  GoyaWifiAcpiDxe.c
+  DsdtAml.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DebugLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiAcpiTableProtocolGuid                     ## CONSUMES
+
+[Depex]
+  gEfiAcpiTableProtocolGuid
