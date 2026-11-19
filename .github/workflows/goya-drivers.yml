@@ -25,14 +25,9 @@ jobs:
             -ArgumentList "modify --installPath `"$vs`" --add Microsoft.VisualStudio.Component.VC.Tools.ARM --quiet --norestart --noUpdateInstaller"
           "VSINSTALL=$vs" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      - name: Install Windows SDK + WDK 10.0.19041
+      - name: Install Windows SDK + WDK 10.0.19041 (retrying, no Chocolatey)
         shell: pwsh
-        run: |
-          choco install windows-sdk-10-version-2004-all -y --no-progress
-          Invoke-WebRequest https://go.microsoft.com/fwlink/?linkid=2128854 -OutFile wdksetup.exe
-          Start-Process -Wait -FilePath .\wdksetup.exe -ArgumentList "/quiet /norestart"
-          Write-Host "KMDF headers:"; Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\10.0.19041.0\wdf\kmdf" | Select-Object -ExpandProperty Name
-          Write-Host "gpioclx/spbcx libs:"; Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib\10.0.19041.0" -Recurse -Include gpioclx*.lib,spbcx*.lib | Select-Object -ExpandProperty FullName
+        run: ./.github/scripts/install-wdk.ps1
 
       - name: Build ${{ matrix.driver }}.sys (ARM)
         shell: cmd
