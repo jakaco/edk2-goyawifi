@@ -9,9 +9,10 @@
   INF_VERSION                    = 0x0001001B
   BASE_NAME                      = Pxa988ResetSystemLib
   FILE_GUID                      = 1d5c7e90-6a4b-4f8e-b3c2-7e9a0d1f2b3c
-  MODULE_TYPE                    = BASE
+  MODULE_TYPE                    = DXE_RUNTIME_DRIVER
   VERSION_STRING                 = 1.0
   LIBRARY_CLASS                  = ResetSystemLib
+  CONSTRUCTOR                    = Pxa988ResetSystemLibConstructor
 
 [Sources]
   Pxa988ResetSystemLib.c
@@ -25,6 +26,12 @@
   BaseLib
   BaseMemoryLib
   DebugLib
+  DxeServicesTableLib
   IoLib
   Pm822Lib
   TimerLib
+  UefiBootServicesTableLib
+  UefiRuntimeLib
+
+[Guids]
+  gEfiEventVirtualAddressChangeGuid

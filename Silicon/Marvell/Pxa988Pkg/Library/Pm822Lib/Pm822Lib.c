@@ -25,6 +25,20 @@
 #define ISR_ITE     BIT6
 #define ISR_IRF     BIT7
 
+STATIC UINTN  mTwsi2Base   = PXA988_TWSI2_BASE;
+STATIC UINTN  mApbcpBase   = PXA988_APBCP_BASE;
+
+VOID
+EFIAPI
+Pm822SetRuntimeBases (
+  IN UINTN  Twsi2Base,
+  IN UINTN  ApbcpBase
+  )
+{
+  mTwsi2Base = Twsi2Base;
+  mApbcpBase = ApbcpBase;
+}
+
 STATIC
 VOID
 I2cEnsureClock (
@@ -32,10 +46,10 @@ I2cEnsureClock (
   )
 {
   // S-Boot talks to the PMIC, so this is normally already on
-  if ((MmioRead32 (APBCP_TWSI2) & (APBC_APBCLK | APBC_FNCLK | APBC_RST)) !=
+  if ((MmioRead32 (mApbcpBase + (APBCP_TWSI2 - PXA988_APBCP_BASE)) & (APBC_APBCLK | APBC_FNCLK | APBC_RST)) !=
       (APBC_APBCLK | APBC_FNCLK))
   {
-    MmioAndThenOr32 (APBCP_TWSI2, ~(UINT32)APBC_RST, APBC_APBCLK | APBC_FNCLK);
+    MmioAndThenOr32 (mApbcpBase + (APBCP_TWSI2 - PXA988_APBCP_BASE), ~(UINT32)APBC_RST, APBC_APBCLK | APBC_FNCLK);
     MicroSecondDelay (10);
   }
 }
@@ -49,8 +63,8 @@ I2cWaitIsr (
   UINTN  Timeout;
 
   for (Timeout = 0; Timeout < 1000; Timeout++) {
-    if ((MmioRead32 (PXA988_TWSI2_BASE + I2C_ISR) & Bit) != 0) {
-      MmioWrite32 (PXA988_TWSI2_BASE + I2C_ISR, Bit);
+    if ((MmioRead32 (mTwsi2Base + I2C_ISR) & Bit) != 0) {
+      MmioWrite32 (mTwsi2Base + I2C_ISR, Bit);
       return EFI_SUCCESS;
     }
 
@@ -69,11 +83,11 @@ I2cXfer (
 {
   EFI_STATUS  Status;
 
-  MmioWrite32 (PXA988_TWSI2_BASE + I2C_IDBR, Data);
-  MmioWrite32 (PXA988_TWSI2_BASE + I2C_ICR, ICR_IUE | ICR_SCLE | ICR_TB | Flags);
+  MmioWrite32 (mTwsi2Base + I2C_IDBR, Data);
+  MmioWrite32 (mTwsi2Base + I2C_ICR, ICR_IUE | ICR_SCLE | ICR_TB | Flags);
   Status = I2cWaitIsr (ISR_ITE);
   if (!EFI_ERROR (Status) &&
-      ((MmioRead32 (PXA988_TWSI2_BASE + I2C_ISR) & ISR_ACKNAK) != 0))
+      ((MmioRead32 (mTwsi2Base + I2C_ISR) & ISR_ACKNAK) != 0))
   {
     Status = EFI_DEVICE_ERROR;      // NAK
   }
@@ -87,7 +101,7 @@ I2cStop (
   VOID
   )
 {
-  MmioWrite32 (PXA988_TWSI2_BASE + I2C_ICR, ICR_IUE | ICR_SCLE | ICR_STOP);
+  MmioWrite32 (mTwsi2Base + I2C_ICR, ICR_IUE | ICR_SCLE | ICR_STOP);
 }
 
 EFI_STATUS
@@ -139,11 +153,11 @@ Pm822Read (
 
   if (!EFI_ERROR (Status)) {
     MmioWrite32 (
-      PXA988_TWSI2_BASE + I2C_ICR,
+      mTwsi2Base + I2C_ICR,
       ICR_IUE | ICR_SCLE | ICR_TB | ICR_STOP | ICR_ACKNAK
       );
     Status = I2cWaitIsr (ISR_IRF);
-    *Val   = (UINT8)MmioRead32 (PXA988_TWSI2_BASE + I2C_IDBR);
+    *Val   = (UINT8)MmioRead32 (mTwsi2Base + I2C_IDBR);
   }
 
   if (EFI_ERROR (Status)) {

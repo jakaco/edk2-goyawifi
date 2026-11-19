@@ -307,7 +307,11 @@ ShowOneSd (
   IN UINT8         CdGpio      // 0xFF = none
   )
 {
-  UINT32  Need = SDH_CLK_RST_N | SDH_CLK_AXI_RST_N | SDH_CLK_ACLK_EN | SDH_CLK_FCLK_EN;
+  //
+  // Each controller needs its own reset releases and function clock; the AXI
+  // clock enable only exists in the SDH0 register and is shared by all.
+  //
+  UINT32  Need = SDH_CLK_RST_N | SDH_CLK_AXI_RST_N | SDH_CLK_FCLK_EN;
   UINT32  C0;
   UINT32  C1;
   UINT32  Ps;
@@ -316,8 +320,8 @@ ShowOneSd (
   UINT32  Div;
   UINT32  Khz;
 
-  if ((MmioRead32 (ApmuClk) & Need) != Need) {
-    Print (L"%s clock off (APMU %08x), not touched\n", Name, MmioRead32 (ApmuClk));
+  if (((MmioRead32 (ApmuClk) & Need) != Need) || ((MmioRead32 (APMU_SDH0) & SDH_CLK_ACLK_EN) == 0)) {
+    Print (L"%s clock off (APMU %08x / SDH0 %08x), not touched\n", Name, MmioRead32 (ApmuClk), MmioRead32 (APMU_SDH0));
     return;
   }
 
@@ -333,9 +337,13 @@ ShowOneSd (
   Print (L"%s caps %08x/%08x (HS %s, 1.8V %s, 8-bit %s), state %08x: card %s\n", Name, C0, C1,
          (C0 & BIT21) ? L"yes" : L"no", (C0 & BIT26) ? L"yes" : L"no", (C0 & BIT18) ? L"yes" : L"no", Ps,
          (Ps & BIT16) ? L"present" : L"absent");
-  Print (L"      bus now: %u kHz, %u-bit, HS %s, clock %s", Khz,
-         (Hc1 & BIT5) ? 8 : ((Hc1 & BIT1) ? 4 : 1), (Hc1 & BIT2) ? L"on" : L"off",
-         (Clk & BIT2) ? L"running" : L"stopped");
+  if (Clk & BIT2) {
+    Print (L"      bus now: %u kHz, %u-bit, HS %s, clock running", Khz,
+           (Hc1 & BIT5) ? 8 : ((Hc1 & BIT1) ? 4 : 1), (Hc1 & BIT2) ? L"on" : L"off");
+  } else {
+    Print (L"      bus now: idle (SD clock stopped), %u-bit, HS %s", (Hc1 & BIT5) ? 8 : ((Hc1 & BIT1) ? 4 : 1),
+           (Hc1 & BIT2) ? L"on" : L"off");
+  }
   if (CdGpio != 0xFF) {
     Print (L", CD pin GPIO%u = %u", CdGpio, (MmioRead32 (GPIO_BANK (CdGpio) + GPIO_GPLR) >> (CdGpio % 32)) & 1);
   }
@@ -403,6 +411,101 @@ ShowUsbRegs (
   Print (L"  PORTSC %08x: device %s, enabled %s, power %s, OTGSC %08x\n", Portsc,
          (Portsc & BIT0) ? L"connected" : L"none", (Portsc & BIT2) ? L"yes" : L"no",
          (Portsc & BIT12) ? L"on" : L"off", MmioRead32 (PXA988_USB_BASE + 0x1A4));
+}
+
+STATIC
+BOOLEAN
+UsbWait (
+  IN UINTN   Address,
+  IN UINT32  Mask,
+  IN UINT32  Value
+  )
+{
+  UINTN  Ms;
+
+  for (Ms = 0; Ms < 100; Ms++) {
+    if ((MmioRead32 (Address) & Mask) == Value) {
+      return TRUE;
+    }
+
+    gBS->Stall (1000);
+  }
+
+  return FALSE;
+}
+
+/**
+  Controller reset, then report what the mode register does. Resets the USB
+  controller underneath the USB drivers, so the page tells the user to reboot.
+**/
+STATIC
+BOOLEAN
+UsbResetController (
+  IN UINTN  Op
+  )
+{
+  MmioAnd32 (Op, ~(UINT32)BIT0);                    // RS = 0
+  UsbWait (Op + 4, BIT12, BIT12);                   // halted
+  MmioOr32 (Op, BIT1);                              // RST
+  return UsbWait (Op, BIT1, 0);
+}
+
+STATIC
+VOID
+UsbProbe (
+  VOID
+  )
+{
+  UINTN   Op;
+  UINT32  Mode;
+
+  gST->ConOut->ClearScreen (gST->ConOut);
+  Print (L"GoyaWifiDiag  USB host probe\n\n");
+  if ((MmioRead32 (APMU_USB) & APMU_USB_CLK_EN) != APMU_USB_CLK_EN) {
+    Print (L"USB clock off, nothing to probe\n");
+    return;
+  }
+
+  Print (L"This resets the USB controller under the USB drivers: reboot afterwards.\n");
+  Print (L"Unplug the PC cable first if you want a host (OTG) result.\n\n");
+
+  Op = PXA988_USB_EHCI_BASE + MmioRead8 (PXA988_USB_EHCI_BASE);
+  Print (L"DCCPARAMS %08x (bit7 host capable: %s, bit8 device capable: %s, endpoints %u)\n",
+         MmioRead32 (PXA988_USB_BASE + 0x124),
+         (MmioRead32 (PXA988_USB_BASE + 0x124) & BIT7) ? L"yes" : L"no",
+         (MmioRead32 (PXA988_USB_BASE + 0x124) & BIT8) ? L"yes" : L"no",
+         MmioRead32 (PXA988_USB_BASE + 0x124) & 0x1F);
+  Print (L"before : USBMODE %08x  OTGSC %08x  PORTSC %08x  USBSTS %08x\n", MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE),
+         MmioRead32 (PXA988_USB_BASE + 0x1A4), MmioRead32 (Op + 0x44), MmioRead32 (Op + 4));
+
+  Print (L"reset  : %s, USBMODE %08x\n", UsbResetController (Op) ? L"done" : L"TIMEOUT",
+         MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE));
+
+  MmioWrite32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE, 0x3);
+  Mode = MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE);
+  Print (L"try 1  : write 3 (host)          -> USBMODE %08x %s\n", Mode, (Mode & 3) == 3 ? L"HOST" : L"no");
+
+  UsbResetController (Op);
+  MmioWrite32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE, 0xB);
+  Mode = MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE);
+  Print (L"try 2  : write 0xB (host, SLOM)  -> USBMODE %08x %s\n", Mode, (Mode & 3) == 3 ? L"HOST" : L"no");
+
+  UsbResetController (Op);
+  MmioOr32 (PXA988_USB_BASE + 0x1A4, BIT5);         // OTGSC.IDPU: ID pull-up on
+  gBS->Stall (10000);
+  Print (L"ID pull : OTGSC %08x (bit8 = ID pin, 1 = no OTG cable)\n", MmioRead32 (PXA988_USB_BASE + 0x1A4));
+  MmioWrite32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE, 0x3);
+  Mode = MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE);
+  Print (L"try 3  : ID pull-up, write 3     -> USBMODE %08x %s\n", Mode, (Mode & 3) == 3 ? L"HOST" : L"no");
+
+  if ((Mode & 3) == 3) {
+    MmioOr32 (Op + 0x44, BIT12);                    // PORTSC.PP
+    gBS->Stall (50000);
+    Print (L"port   : PP set, PORTSC %08x, OTGSC %08x (AVV bit9, ASV bit10)\n", MmioRead32 (Op + 0x44),
+           MmioRead32 (PXA988_USB_BASE + 0x1A4));
+  }
+
+  Print (L"\nHost mode %s.\n", (Mode & 3) == 3 ? L"is accepted by the controller" : L"was refused in every attempt");
 }
 
 STATIC
@@ -540,8 +643,26 @@ GoyaWifiDiagMain (
   Print (L"\nUSB host (Pxa988UsbDxe):\n");
   ShowVariable (L"UsbStatus", L"no UsbStatus variable (driver disabled or it did not run)");
   ShowUsbRegs ();
-  if (!NextPage (L"colour test (any key = next colour)")) {
-    return EFI_SUCCESS;
+  Print (L"\n[Vol+] USB host probe (resets the USB controller)\n");
+  for ( ; ; ) {
+    EFI_INPUT_KEY  Key;
+    UINTN          Index;
+
+    Print (L"[Home] colour test (any key = next colour)    [Power] quit\n");
+    gST->ConIn->Reset (gST->ConIn, FALSE);
+    do {
+      gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, &Index);
+    } while (EFI_ERROR (gST->ConIn->ReadKeyStroke (gST->ConIn, &Key)) ||
+             ((Key.ScanCode != SCAN_UP) && (Key.ScanCode != SCAN_ESC) && (Key.UnicodeChar != CHAR_CARRIAGE_RETURN)));
+    if (Key.ScanCode == SCAN_ESC) {
+      return EFI_SUCCESS;
+    }
+
+    if (Key.ScanCode != SCAN_UP) {
+      break;
+    }
+
+    UsbProbe ();
   }
 
   ColorTest ();

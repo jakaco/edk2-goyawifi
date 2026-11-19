@@ -13,8 +13,27 @@
 #include <Library/IoLib.h>
 #include <Library/TimerLib.h>
 #include <Pxa988.h>
+#include <Library/MmpTimerRuntime.h>
 
 #define MMP_CNT  1
+
+//
+// The timer base is a variable so that a runtime driver can move it to the
+// virtual address the OS gave the MMIO region (see MmpTimerRuntime.h). In
+// runtime mode the timer is never (re)initialised: the OS owns timer 0 then.
+//
+STATIC UINTN    mTimerBase   = PXA988_TIMER0_BASE;
+STATIC BOOLEAN  mRuntimeMode = FALSE;
+
+VOID
+EFIAPI
+MmpTimerSetRuntimeBase (
+  IN UINTN  VirtualBase
+  )
+{
+  mTimerBase   = VirtualBase;
+  mRuntimeMode = TRUE;
+}
 
 STATIC
 VOID
@@ -24,7 +43,11 @@ MmpTimerEnsureRunning (
 {
   UINT32  Cer;
 
-  Cer = MmioRead32 (PXA988_TIMER0_BASE + TMR_CER);
+  if (mRuntimeMode) {
+    return;
+  }
+
+  Cer = MmioRead32 (mTimerBase + TMR_CER);
   if ((Cer & (1U << MMP_CNT)) != 0) {
     return;
   }
@@ -35,12 +58,12 @@ MmpTimerEnsureRunning (
   MmioWrite32 (APBC_TIMERS0, APBC_APBCLK | APBC_RST);
   MmioWrite32 (APBC_TIMERS0, APBC_APBCLK | APBC_FNCLK | APBC_FNCLKSEL (3));
 
-  MmioAnd32 (PXA988_TIMER0_BASE + TMR_CCR, ~(UINT32)(3U << 2));   // counter 1: fast clock
-  MmioOr32 (PXA988_TIMER0_BASE + TMR_CMR, 1U << MMP_CNT);         // free running
-  MmioWrite32 (PXA988_TIMER0_BASE + TMR_PLCR (MMP_CNT), 0);
-  MmioWrite32 (PXA988_TIMER0_BASE + TMR_ICR (MMP_CNT), 0x7);
-  MmioWrite32 (PXA988_TIMER0_BASE + TMR_IER (MMP_CNT), 0);
-  MmioWrite32 (PXA988_TIMER0_BASE + TMR_CER, Cer | (1U << MMP_CNT));
+  MmioAnd32 (mTimerBase + TMR_CCR, ~(UINT32)(3U << 2));   // counter 1: fast clock
+  MmioOr32 (mTimerBase + TMR_CMR, 1U << MMP_CNT);         // free running
+  MmioWrite32 (mTimerBase + TMR_PLCR (MMP_CNT), 0);
+  MmioWrite32 (mTimerBase + TMR_ICR (MMP_CNT), 0x7);
+  MmioWrite32 (mTimerBase + TMR_IER (MMP_CNT), 0);
+  MmioWrite32 (mTimerBase + TMR_CER, Cer | (1U << MMP_CNT));
 }
 
 STATIC
@@ -54,10 +77,10 @@ MmpTimerRead (
 
   MmpTimerEnsureRunning ();
 
-  MmioWrite32 (PXA988_TIMER0_BASE + TMR_CVWR (MMP_CNT), 1);
+  MmioWrite32 (mTimerBase + TMR_CVWR (MMP_CNT), 1);
   Val = 0;
   for (Delay = 0; Delay < 3; Delay++) {
-    Val = MmioRead32 (PXA988_TIMER0_BASE + TMR_CVWR (MMP_CNT));
+    Val = MmioRead32 (mTimerBase + TMR_CVWR (MMP_CNT));
   }
 
   return Val;

@@ -29,4 +29,16 @@ Pm822Write (
   IN UINT8  Val
   );
 
+/**
+  A runtime driver calls this from its virtual address change notification
+  with the converted bases of the TWSI2 (PXA988_TWSI2_BASE) and APBCP
+  (PXA988_APBCP_BASE) register blocks.
+**/
+VOID
+EFIAPI
+Pm822SetRuntimeBases (
+  IN UINTN  Twsi2Base,
+  IN UINTN  ApbcpBase
+  );
+
 #endif // PM822_LIB_H_
