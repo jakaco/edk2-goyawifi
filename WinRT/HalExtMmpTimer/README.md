@@ -14,9 +14,10 @@ What it does
   the firmware `MmpTimerLib`. Clock 3.25 MHz.
 
 Build (Windows) - one source, two WDKs
-- `build.cmd w10`: Windows 10 22H2 WDK (10.0.19041, the last WDK line that can still build ARM32 kernel code;
-  Windows 11 WDKs cannot). Run from an ARM-targeting VS developer prompt. `HalExtMmpTimer.vcxproj` also works
-  with this WDK (Release|ARM).
+- `build.cmd w10`: use the WDK **10.0.22621** (Microsoft lists it as supported for Windows 10 x86/ARM32 driver
+  development, with VS 2022) or its EWDK ISO (self-contained; works next to VS 2026). WDKs from 22000 on up to
+  the VS 2026 one (28000) cannot build ARM32 kernel code. Run from an ARM build prompt (EWDK `setenv arm fre`,
+  or a VS 2022 ARM prompt with `DDK_INC_PATH` and `LIB` set). `HalExtMmpTimer.vcxproj` also works in VS 2022.
 - `build.cmd w8`: Windows 8.0 WDK, from its ARM build environment. Adds `/DHALEXT_TARGET_WIN8=1`.
 - `HalExtCompat.h` gives fallbacks only for names an older `nthalext.h` lacks (`READ/WRITE_REGISTER_NOFENCE_ULONG`,
   `TIMER_ALWAYS_ON`, `TIMER_GENERATES_LINE_BASED_INTERRUPTS`); the newer header's own definitions always win. On
