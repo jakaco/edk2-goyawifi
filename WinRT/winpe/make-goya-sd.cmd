@@ -73,6 +73,13 @@ echo   HAL extension registered: %HALEXT_REGPATH%
 rem kit layout: every INF in ..\drivers (goyasdhc gives WinPE access to the card as a disk);
 rem otherwise each driver next to this script or in ..\drivers\<name>\out (GitHub Actions artifacts)
 set KITDRV=%HERE%..\drivers
+if not exist "%KITDRV%\GoyaTestCert.cer" goto nocert
+reg load HKLM\GOYAPE_SOFTWARE "%MNT%\Windows\System32\config\SOFTWARE" >nul || goto discard
+powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%import-testcert.ps1" -Cer "%KITDRV%\GoyaTestCert.cer" -Hive GOYAPE_SOFTWARE
+set RC=%errorlevel%
+reg unload HKLM\GOYAPE_SOFTWARE >nul
+if not "%RC%"=="0" goto discard
+:nocert
 if not exist "%KITDRV%\goyasdhc.inf" goto perdriver
 echo   adding all drivers from "%KITDRV%"
 dism /Image:"%MNT%" /Add-Driver /Driver:"%KITDRV%" /Recurse /ForceUnsigned || goto discard
@@ -108,6 +115,7 @@ exit /b %errorlevel%
 
 :discard
 reg unload HKLM\%HIVE% >nul 2>&1
+reg unload HKLM\GOYAPE_SOFTWARE >nul 2>&1
 dism /Unmount-Image /MountDir:"%MNT%" /Discard
 :fail
 echo FAILED, see the messages above.

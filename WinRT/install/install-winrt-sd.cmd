@@ -24,7 +24,8 @@ rem    SYSTEM  260 MB FAT32  \EFI\Boot\bootarm.efi + BCD   <- the firmware boots
 rem    MSR      16 MB        (GPT only)
 rem    Windows  rest  NTFS
 rem
-rem  Then: Goya drivers from ..\drivers (DISM /ForceUnsigned), goyasdhc forced to
+rem  Then: Goya drivers from ..\drivers (DISM /ForceUnsigned), the Goya test certificate
+rem  (GoyaTestCert.cer from the signed CI package) trusted in the image, goyasdhc forced to
 rem  boot start, HalExtMmpTimer.dll + OSExtensionDatabase entry, BCD with
 rem  testsigning / nointegritychecks / onecpu / no recovery, unattend.xml (skips
 rem  OOBE, local account "Goya", no password) and a first-boot diagnostics script.
@@ -39,6 +40,7 @@ for %%A in (%3 %4) do (
 set HERE=%~dp0
 set DRV=%HERE%..\drivers
 set HIVE=GOYART_SYSTEM
+set SWHIVE=GOYART_SOFTWARE
 set HALEXT_REGPATH=\SystemRoot\System32\HalExtMmpTimer.dll
 set DP=%TEMP%\goya-diskpart.txt
 
@@ -49,6 +51,9 @@ if not exist "%WIM%" (echo Image not found: %WIM% & exit /b 1)
 if not exist "%DRV%\goyasdhc.inf" (echo Missing drivers: %DRV%\goyasdhc.inf ^(keep the kit folder layout^). & exit /b 1)
 if not exist "%DRV%\goyasdhc.sys" (echo Missing %DRV%\goyasdhc.sys & exit /b 1)
 if not exist "%DRV%\HalExtMmpTimer.dll" (echo Missing %DRV%\HalExtMmpTimer.dll & exit /b 1)
+set SIGNED=0
+if exist "%DRV%\GoyaTestCert.cer" if exist "%DRV%\goyasdhc.cat" set SIGNED=1
+if "%SIGNED%"=="0" echo WARNING: drivers are not test-signed ^(no GoyaTestCert.cer / .cat in %DRV%^). Use the goya-drivers-signed CI package.
 echo %DISK%| findstr /r "^[0-9][0-9]*$" >nul || (echo disk# must be a number. & exit /b 1)
 
 echo === images in %WIM%
@@ -125,6 +130,14 @@ call :hive
 set RC=%errorlevel%
 reg unload HKLM\%HIVE% >nul
 if not "%RC%"=="0" goto fail
+if "%SIGNED%"=="0" goto nocert
+reg unload HKLM\%SWHIVE% >nul 2>&1
+reg load HKLM\%SWHIVE% %W%:\Windows\System32\config\SOFTWARE >nul || goto fail
+powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%import-testcert.ps1" -Cer "%DRV%\GoyaTestCert.cer" -Hive %SWHIVE%
+set RC=%errorlevel%
+reg unload HKLM\%SWHIVE% >nul
+if not "%RC%"=="0" goto fail
+:nocert
 
 echo === 5/6 boot files and BCD
 bcdboot %W%:\Windows /s %S%: /f UEFI || goto fail
@@ -177,6 +190,7 @@ exit /b 0
 
 :fail
 reg unload HKLM\%HIVE% >nul 2>&1
+reg unload HKLM\%SWHIVE% >nul 2>&1
 echo FAILED, see the messages above.
 exit /b 1
 
