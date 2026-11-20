@@ -107,6 +107,9 @@ rem HAL extension entry LAST, so that nothing added above can overwrite it
 reg load HKLM\%HIVE% "%MNT%\Windows\System32\config\SYSTEM" >nul || goto discard
 reg add "HKLM\%HIVE%\ControlSet001\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t REG_SZ /d "%HALEXT_REGPATH%" /f >nul
 set RC=%errorlevel%
+rem Bring-up: the stop screen stays up and shows the four parameters
+reg add "HKLM\%HIVE%\ControlSet001\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f >nul
+reg add "HKLM\%HIVE%\ControlSet001\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f >nul
 reg unload HKLM\%HIVE% >nul
 if not "%RC%"=="0" goto discard
 echo   HAL extension registered: %HALEXT_REGPATH%

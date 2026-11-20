@@ -9,6 +9,7 @@
     goya-diag.cmd <W:> minidump on             small crash dumps to \Windows\Minidump (needs a page file; set)
     goya-diag.cmd <W:> disable <service>       Start=4 (e.g. goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
     goya-diag.cmd <W:> enable <service>        back to the INF start type
+    goya-diag.cmd <W:> bsod-details            stop screen stays up (no auto restart) and shows the 4 parameters
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
     goya-diag.cmd <W:> halext-files            copy System32\HalExt*.dll, hal.dll, ntoskrnl.exe + versions to .\goya-halext-<time>
     goya-diag.cmd <W:> halext-install <dll>    put a (signed) HalExtMmpTimer.dll into System32 and register it
@@ -44,7 +45,7 @@ function Run([string]$CmdLine, [switch]$Show) {
     return $LASTEXITCODE
 }
 
-$Changes = @('verifier-off', 'minidump', 'disable', 'enable', 'halext', 'halext-install')
+$Changes = @('verifier-off', 'bsod-details', 'minidump', 'disable', 'enable', 'halext', 'halext-install')
 
 function Mount-PE {
     if (-not $IsPE) { return }
@@ -192,6 +193,16 @@ switch ($act) {
             $mm = "$cs\Control\Session Manager\Memory Management"
             Set-ItemProperty $mm -Name PagingFiles -Value @('C:\pagefile.sys 256 512') -Type MultiString
             Write-Host 'minidumps on (C:\pagefile.sys 256-512 MB, no auto reboot). Open them with WinDbg: !analyze -v, lm'
+        }
+    }
+    'bsod-details' {
+        With-SystemHive {
+            param($cs)
+            $k = "$cs\Control\CrashControl"
+            if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null }
+            Set-ItemProperty $k -Name AutoReboot -Value 0 -Type DWord
+            Set-ItemProperty $k -Name DisplayParameters -Value 1 -Type DWord
+            Write-Host 'stop screen: no automatic restart, stop code parameters shown (photo it, then hold Power)'
         }
     }
     { $_ -in 'disable', 'enable' } {

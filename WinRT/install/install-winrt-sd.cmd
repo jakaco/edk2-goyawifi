@@ -177,6 +177,9 @@ exit /b 0
 :hive
 set K=HKLM\%HIVE%\ControlSet001
 reg add "%K%\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t REG_SZ /d "%HALEXT_REGPATH%" /f >nul || exit /b 1
+rem Bring-up: the stop screen stays up and shows the four parameters
+reg add "%K%\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f >nul
+reg add "%K%\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f >nul
 rem goyasdhc must be loaded by the boot loader no matter what DISM did with it
 reg add "%K%\Services\goyasdhc" /v Type /t REG_DWORD /d 1 /f >nul || exit /b 1
 reg add "%K%\Services\goyasdhc" /v Start /t REG_DWORD /d 0 /f >nul
