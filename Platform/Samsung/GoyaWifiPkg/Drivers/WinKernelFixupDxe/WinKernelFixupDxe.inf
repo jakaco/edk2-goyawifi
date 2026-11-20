@@ -1,0 +1,39 @@
+## @file
+#  Patches the Windows 8 build 8520 ARM kernel at ExitBootServices so it does not program the
+#  CP14 debug registers, which are locked (UNDEFINED) on the PXA986.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = WinKernelFixupDxe
+  FILE_GUID                      = 4c6e2b1a-93d7-4f58-a0c2-7e15d8b39f64
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = WinKernelFixupDxeEntry
+
+[Sources]
+  WinKernelFixupDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  CacheMaintenanceLib
+  DebugLib
+  MemoryAllocationLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdFrameBufferBase
+  gPxa988TokenSpaceGuid.PcdFrameBufferWidth
+  gPxa988TokenSpaceGuid.PcdFrameBufferHeight
+  gPxa988TokenSpaceGuid.PcdFrameBufferStride
+
+[Depex]
+  TRUE

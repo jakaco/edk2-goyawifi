@@ -286,6 +286,7 @@
   EmbeddedPkg/RealTimeClockRuntimeDxe/RealTimeClockRuntimeDxe.inf
   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
   Platform/Samsung/GoyaWifiPkg/Drivers/GoyaWifiAcpiDxe/GoyaWifiAcpiDxe.inf
+  Platform/Samsung/GoyaWifiPkg/Drivers/WinKernelFixupDxe/WinKernelFixupDxe.inf
   MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer.inf
   MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
 
