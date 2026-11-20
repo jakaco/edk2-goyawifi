@@ -293,6 +293,9 @@ Pxa988SdPower (
   }
 
   DEBUG ((DEBUG_INFO, "Pxa988Sdhci: LDO_ENA1_1 = 0x%02x\n", Ena));
+  // LDO1 (v_tsp_3v3, touchscreen supply) is regulator-boot-on in the vendor DT: S-Boot has already set
+  // it up. Do NOT enable it here (the voltage would be unknown); just report the state for the tester.
+  DEBUG ((DEBUG_INFO, "Pxa988Sdhci: touch supply LDO1 is %a\n", (Ena & BIT0) != 0 ? "ON" : "OFF (touch will not work)"));
   if ((Ena & (PM800_LDO4_EN | PM800_LDO5_EN)) != (PM800_LDO4_EN | PM800_LDO5_EN)) {
     Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_1, Ena | PM800_LDO4_EN | PM800_LDO5_EN);
     MicroSecondDelay (10000);

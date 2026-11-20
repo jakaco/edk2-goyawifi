@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        driver: [goyagpio, goyai2c]
+        driver: [goyagpio, goyai2c, goyatouch, goyakeys]
     steps:
       - uses: actions/checkout@v4
 

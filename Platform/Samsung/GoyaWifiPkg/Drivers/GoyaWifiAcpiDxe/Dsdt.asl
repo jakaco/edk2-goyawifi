@@ -48,6 +48,35 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
         Memory32Fixed (ReadWrite, 0xD4015060, 0x4)
       })
     }
+    // TWSI2 (I2C bus 2): the 88PM822 PMIC (base page 0x30). Exposed only so the keys driver can read the
+    // power-key status bit. The firmware runtime services (reset/poweroff) share this controller.
+    Device (I2C2) {
+      Name (_HID, "MRVL0004")
+      Name (_UID, 2)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        Memory32Fixed (ReadWrite, 0xD4037000, 0x1000)
+        Memory32Fixed (ReadWrite, 0xD403B028, 0x4)
+      })
+    }
+    // Zinitix BT532 touchscreen on I2C1 @0x20 (driver goyatouch polls it; no interrupt resource)
+    Device (TCH0) {
+      Name (_HID, "MRVL0005")
+      Name (_UID, 0)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        I2cSerialBus (0x20, ControllerInitiated, 400000, AddressingMode7Bit, "\\_SB.I2C1", 0, ResourceConsumer, , )
+      })
+    }
+    // Hardware keys: volume up/down + home (GPIO 1/2/13, read directly) and power (PMIC onkey @0x30 on I2C2)
+    Device (KEY0) {
+      Name (_HID, "MRVL0006")
+      Name (_UID, 0)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        I2cSerialBus (0x30, ControllerInitiated, 400000, AddressingMode7Bit, "\\_SB.I2C2", 0, ResourceConsumer, , )
+      })
+    }
     // microSD host (SDH1). PNP0D40 = "SDA standard compliant SD host controller": the inbox
     // sdport/sdbus stack binds to it with no custom driver. Marvell quirks are untested.
     // The firmware has already powered the slot (88PM822 LDO4/LDO5) and enabled the clocks.
