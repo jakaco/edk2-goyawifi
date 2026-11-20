@@ -9,8 +9,10 @@
        components can mux pins at run time.
 
    Registry (device hardware key, optional):
-     GroupMask (REG_DWORD)  bit n enables table group n. Default: every group except the twsi1 "gpio" idle
-                            state (it would undo the twsi1 function group).
+     GroupMask (REG_DWORD)  bit n enables table group n (order as in pinmux_table.h). Default
+                            PINMUX_DEFAULT_MASK = every group except the ones Windows may be using at the
+                            moment the driver starts: sdh1 (microSD = boot disk), sdh3 (eMMC), uart1
+                            (debug port) and the TWSI1 "gpio" idle state.
      Disable   (REG_DWORD)  non-zero: do not apply the static table at all.
 
    ACPI (see Dsdt.asl PMX0): HID MRVL0008, Memory32Fixed 0xD401E000 / 0x1000.
@@ -34,7 +36,7 @@ typedef struct _PINMUX_REQ { ULONG Offset; ULONG Clear; ULONG Set; } PINMUX_REQ;
 
 typedef struct _GOYA_PINMUX {
     PUCHAR Base;
-    ULONG  Applied;
+    ULONG  Applied;                     /* registers changed by the last D0Entry */
 } GOYA_PINMUX, *PGOYA_PINMUX;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GOYA_PINMUX, GetPm)
 
@@ -49,12 +51,16 @@ static ULONG ReadDword(WDFKEY Key, PCWSTR Name, ULONG Default)
     return v;
 }
 
-static VOID Rmw(PGOYA_PINMUX P, ULONG Off, ULONG Clear, ULONG Set)
+/* Read-modify-write; registers that already hold the wanted value are not written (no glitches). */
+static BOOLEAN Rmw(PGOYA_PINMUX P, ULONG Off, ULONG Clear, ULONG Set)
 {
     PULONG r = (PULONG)(P->Base + Off);
     ULONG v = READ_REGISTER_ULONG(r);
-    v = (v & ~Clear) | (Set & Clear);
-    WRITE_REGISTER_ULONG(r, v);
+    ULONG n = (v & ~Clear) | (Set & Clear);
+    if (n == v) return FALSE;
+    WRITE_REGISTER_ULONG(r, n);
+    (VOID)READ_REGISTER_ULONG(r);       /* post the write before the next pad changes */
+    return TRUE;
 }
 
 static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
@@ -83,7 +89,7 @@ static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
 static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
 {
     PGOYA_PINMUX P = GetPm(Device);
-    ULONG mask = ~(1UL << PINMUX_GROUP_TWSI1_GPIO_PINS), disable = 0, i;
+    ULONG mask = PINMUX_DEFAULT_MASK, disable = 0, i;
     WDFKEY key;
     UNREFERENCED_PARAMETER(Prev);
 
@@ -97,9 +103,8 @@ static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
     P->Applied = 0;
     for (i = 0; i < RTL_NUMBER_OF(gPinmuxTable); i++) {
         const PINMUX_ENTRY *e = &gPinmuxTable[i];
-        if (!(mask & (1UL << e->Group))) continue;
-        Rmw(P, e->Offset, e->Clear, e->Set);
-        P->Applied++;
+        if (!(mask & (1UL << e->Group)) || !OffsetOk(e->Offset)) continue;
+        if (Rmw(P, e->Offset, e->Clear, e->Set)) P->Applied++;
     }
     return STATUS_SUCCESS;
 }

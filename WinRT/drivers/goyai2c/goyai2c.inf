@@ -44,6 +44,12 @@ ServiceBinary  = %12%\goyai2c.sys
 LoadOrderGroup = Base
 Dependencies   = SpbCx
 
+[I2C_Inst.NT.Wdf]
+KmdfService = goyai2c, I2C_wdfsect
+
+[I2C_wdfsect]
+KmdfLibraryVersion = 1.11
+
 [Strings]
 PROVIDER = "Goya"
 I2C.DeviceDesc = "Marvell PXA988 I2C Controller"

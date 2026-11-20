@@ -7,9 +7,12 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
       Name (_HID, "ACPI0007")
       Name (_UID, 0)
     }
+    // CPU1's GICC entry is disabled in the MADT (no SMP bring-up yet): report it not present so the
+    // processor object matches the MADT.
     Device (CPU1) {
       Name (_HID, "ACPI0007")
       Name (_UID, 1)
+      Method (_STA) { Return (0x0) }
     }
     // Marvell MMP timer 0 HAL extension is matched by CSRT; this device lets the
     // INF install it (ACPI\MRVL0002)
@@ -77,17 +80,18 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
         I2cSerialBus (0x30, ControllerInitiated, 400000, AddressingMode7Bit, "\\_SB.I2C2", 0, ResourceConsumer, , )
       })
     }
-    // microSD host (SDH1). HID MRVL0007 binds the Goya sdport miniport (goyasdhc, boot start);
-    // CID PNP0D40 lets the inbox SDA-standard driver take it if goyasdhc is not installed.
+    // microSD host (SDH1) = Windows boot disk. HID MRVL0007 binds goyasdhc (Storport miniport, boot
+    // start, polled PIO). No _CID PNP0D40 on purpose: the inbox sdbus.sys must never take this
+    // controller (it cannot handle the PXAv3 quirks). No interrupt on purpose: the driver polls, so a
+    // stuck level interrupt can never storm. Second range = APMU SDH0/SDH1 clock registers.
     // The firmware has already powered the slot (88PM822 LDO4/LDO5) and enabled the clocks.
     Device (SDH1) {
       Name (_HID, "MRVL0007")
-      Name (_CID, "PNP0D40")
       Name (_UID, 1)
       Method (_STA) { Return (0xF) }
       Name (_CRS, ResourceTemplate () {
         Memory32Fixed (ReadWrite, 0xD4280000, 0x1000)
-        Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { 71 }   // SPI 39 + 32
+        Memory32Fixed (ReadWrite, 0xD4282854, 0x8)
       })
     }
     // Pin multiplexer (MFPR block), driven by goyapinmux

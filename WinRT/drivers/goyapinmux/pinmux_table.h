@@ -22,6 +22,30 @@ typedef struct _PINMUX_ENTRY { USHORT Offset; USHORT Clear; USHORT Set; UCHAR Gr
 #define PINMUX_GROUP_DISPLAY_PINS 18
 #define PINMUX_GROUP_WLAN_BT_CTRL_PINS 19
 #define PINMUX_GROUP_TOUCH_PINS 20
+#define PINMUX_DEFAULT_MASK 0x001F4FFEUL   /* all but: sdh1_pins, sdh3_emmc_pins, twsi1_gpio_pins, uart1_pins */
+static const char * const gPinmuxGroupNames[PINMUX_GROUP_COUNT] = {
+    "uart1_pins",
+    "uart2_pins",
+    "i2s_pins",
+    "i2c_charger_pins",
+    "charger_pins",
+    "i2c_sensor_pins",
+    "accel_pins",
+    "i2c_muic_pins",
+    "muic_pins",
+    "i2c_camera_pins",
+    "camera_pins",
+    "twsi1_pins",
+    "twsi1_gpio_pins",
+    "sdh1_pins",
+    "sdh2_wlan_pins",
+    "sdh3_emmc_pins",
+    "gpio_keys_pins",
+    "home_key_pins",
+    "display_pins",
+    "wlan_bt_ctrl_pins",
+    "touch_pins",
+};
 static const PINMUX_ENTRY gPinmuxTable[] = {
     { 0x0198, 0xF807, 0xD006, 0, 0 }, /* uart1_pins: GPIO47 */
     { 0x019C, 0xF807, 0xD006, 0, 0 }, /* uart1_pins: GPIO48 */
@@ -37,7 +61,7 @@ static const PINMUX_ENTRY gPinmuxTable[] = {
     { 0x0234, 0xE007, 0x0000, 4, 0 }, /* charger_pins: GPIO98 */
     { 0x0168, 0x038F, 0x0308, 5, 0 }, /* i2c_sensor_pins: GPIO35 */
     { 0x016C, 0x038F, 0x0308, 5, 0 }, /* i2c_sensor_pins: GPIO36 */
-    { 0x0104, 0xE38F, 0x0288, 6, 0 }, /* accel_pins: GPIO10 */
+    { 0x0104, 0xE38F, 0xA288, 6, 0 }, /* accel_pins: GPIO10 */
     { 0x01A0, 0x038F, 0x0288, 7, 0 }, /* i2c_muic_pins: GPIO49 */
     { 0x01A4, 0x038F, 0x0288, 7, 0 }, /* i2c_muic_pins: GPIO50 */
     { 0x0220, 0xE007, 0xC000, 8, 0 }, /* muic_pins: GPIO93 */
@@ -83,7 +107,7 @@ static const PINMUX_ENTRY gPinmuxTable[] = {
     { 0x0064, 0xFB8F, 0xDA89, 15, 0 }, /* sdh3_emmc_pins: SM_SCLK */
     { 0x00E0, 0xE38F, 0xC308, 16, 0 }, /* gpio_keys_pins: GPIO1 */
     { 0x00E4, 0xE38F, 0xC308, 16, 0 }, /* gpio_keys_pins: GPIO2 */
-    { 0x0110, 0xE007, 0xC000, 17, 0 }, /* home_key_pins: GPIO13 */
+    { 0x0110, 0xE007, 0x0000, 17, 0 }, /* home_key_pins: GPIO13 */
     { 0x0100, 0x1807, 0x1000, 18, 0 }, /* display_pins: GPIO9 */
     { 0x010C, 0x1807, 0x1000, 18, 0 }, /* display_pins: GPIO12 */
     { 0x0128, 0x1807, 0x1000, 18, 0 }, /* display_pins: GPIO19 */
@@ -94,5 +118,5 @@ static const PINMUX_ENTRY gPinmuxTable[] = {
     { 0x01FC, 0x1807, 0x1000, 19, 0 }, /* wlan_bt_ctrl_pins: GPIO84 */
     { 0x0200, 0x1807, 0x1000, 19, 0 }, /* wlan_bt_ctrl_pins: GPIO85 */
     { 0x0204, 0x1807, 0x1000, 19, 0 }, /* wlan_bt_ctrl_pins: GPIO86 */
-    { 0x0224, 0xE007, 0xC000, 20, 0 }, /* touch_pins: GPIO94 */
+    { 0x0224, 0xE007, 0x0000, 20, 0 }, /* touch_pins: GPIO94 */
 };

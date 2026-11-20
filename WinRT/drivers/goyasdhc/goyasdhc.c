@@ -1,516 +1,442 @@
 /*
- * goyasdhc - Windows 8.0 RT SD host miniport (sdport) for the Marvell PXA986/PXA988
- * (PXAv3, SDHCI 3.0 compatible) controller of the Galaxy Tab 3 Lite. Slot 0 = SDH1 = microSD.
+ * goyasdhc - microSD boot driver for Windows 8.0 RT on the Galaxy Tab 3 Lite (PXA986/988, SDH1).
  *
- * Design:
- *  - Standard SDHCI register model, PIO data transfers only (robust first; no ADMA).
- *  - Same board quirks as the EDK2 driver (Pxa988SdhciDxe):
- *      * base clock is 52 MHz (APMU SDH1 clock gate/divider is left as the firmware set it),
- *      * no 1.8 V signalling, no UHS, no tuning,
- *      * card detect is GPIO11 (active low), fed to the controller through the
- *        CD_SIG_SEL/CD_TEST_LVL override bits in Host Control 1,
- *      * the slot supply (88PM822 LDO4/LDO5) was powered by firmware; Windows leaves it on.
- *  - Boot capable: StartType 0 in the INF, crash dump supported (no WPP/KMDF).
+ * Windows 8.0 has no sdport.sys (the SD miniport model is Windows 10 only) and its inbox sdbus.sys
+ * cannot cope with this controller's quirks, so this is a Storport miniport that exposes the card as
+ * one fixed SCSI disk (LUN 0) and runs the SD protocol itself (sdcore.c):
+ *   - polled PIO only: no interrupt, no DMA (works the same in normal, crash-dump and hibernate mode),
+ *   - 52 MHz base clock (capability register is not trusted), 3.3 V only,
+ *     high-speed 26 MHz with automatic fallback to 13 / 6.5 MHz and 1-bit on errors,
+ *   - card-detect override in Host Control 1 (the slot's detect line is GPIO 11, not the CD pin),
+ *   - optional second memory range = APMU SDH0/SDH1 clock registers; the clock is re-enabled if the
+ *     firmware left it off.
+ * Requests are executed synchronously in HwStartIo (Storport serialises StartIo calls).
+ *
+ * ACPI: \_SB.SDH1, HID MRVL0007, Memory32Fixed 0xD4280000/0x1000 [+ 0xD4282854/0x8], no interrupt.
  */
-#include <ntddk.h>
-#include <sdport.h>
+#include <storport.h>
+#include <string.h>
 
-#define GOYA_SD_BASE_CLOCK_HZ   52000000UL
-#define GOYA_GPIO_PHYS          0xD4019000ULL
-#define GOYA_GPIO_LEN           0x100
-#define GOYA_SD_CD_GPIO         11          /* bank 0, active low */
+#ifndef RtlZeroMemory
+#define RtlZeroMemory(d, l)    memset((d), 0, (l))
+#endif
+#ifndef RtlCopyMemory
+#define RtlCopyMemory(d, s, l) memcpy((d), (s), (l))
+#endif
+#define GOYA_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
-/* SDHCI registers */
-#define R_BLKSIZE       0x04    /* 16 */
-#define R_BLKCOUNT      0x06    /* 16 */
-#define R_ARG           0x08    /* 32 */
-#define R_XFER          0x0C    /* 16 */
-#define R_CMD           0x0E    /* 16 */
-#define R_RESP0         0x10
-#define R_BUFFER        0x20    /* 32 */
-#define R_PRESENT       0x24    /* 32 */
-#define R_HOSTCTRL      0x28    /* 8  */
-#define R_POWER         0x29    /* 8  */
-#define R_CLKCTRL       0x2C    /* 16 */
-#define R_TIMEOUT       0x2E    /* 8  */
-#define R_SWRESET       0x2F    /* 8  */
-#define R_INTSTS        0x30    /* 32 */
-#define R_INTEN         0x34    /* 32 */
-#define R_SIGEN         0x38    /* 32 */
-#define R_CAPS          0x40    /* 32 */
+#ifndef STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE
+#define STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE 3
+#endif
 
-#define PRES_CMD_INHIBIT   0x00000001
-#define PRES_DAT_INHIBIT   0x00000002
-#define PRES_DAT_ACTIVE    0x00000004
+#define SD_RD8(c, o)      StorPortReadRegisterUchar((c)->Os, (PUCHAR)((c)->Regs + (o)))
+#define SD_RD16(c, o)     StorPortReadRegisterUshort((c)->Os, (PUSHORT)((c)->Regs + (o)))
+#define SD_RD32(c, o)     StorPortReadRegisterUlong((c)->Os, (PULONG)((c)->Regs + (o)))
+#define SD_WR8(c, o, v)   StorPortWriteRegisterUchar((c)->Os, (PUCHAR)((c)->Regs + (o)), (UCHAR)(v))
+#define SD_WR16(c, o, v)  StorPortWriteRegisterUshort((c)->Os, (PUSHORT)((c)->Regs + (o)), (USHORT)(v))
+#define SD_WR32(c, o, v)  StorPortWriteRegisterUlong((c)->Os, (PULONG)((c)->Regs + (o)), (ULONG)(v))
+#define SD_STALL(us)      StorPortStallExecution(us)
+#define SD_LOG(...)       StorPortDebugPrint(0, __VA_ARGS__)
 
-#define HC_4BIT            0x02
-#define HC_HISPEED         0x04
-#define HC_8BIT            0x20
-#define HC_CD_TEST_LVL     0x40
-#define HC_CD_SIG_SEL      0x80
+#include "sdcore.c"
 
-#define INT_CC             0x00000001
-#define INT_TC             0x00000002
-#define INT_BGE            0x00000004
-#define INT_DMA            0x00000008
-#define INT_BWR            0x00000010
-#define INT_BRR            0x00000020
-#define INT_CINS           0x00000040
-#define INT_CRM            0x00000080
-#define INT_CINT           0x00000100
-#define INT_RETUNE         0x00001000
-#define INT_ERR            0x00008000
-#define INT_ERR_ALL        0x03FF0000
-#define INT_EVT_MASK       0x00007FFF
+/* APMU SDH clock control (offsets inside the optional 0xD4282854 range) */
+#define APMU_SDH0_OFF     0x0
+#define APMU_SDH1_OFF     0x4
+#define SDH_CLK_ON        0x0813      /* RST_N | AXI_RST_N | FCLK_EN | FC, divider 0 bits added below */
+#define SDH_CLK_VALUE     (0x0013 | (7 << 8) | 0x0800)
+#define SDH_CLK_ACLK_EN   0x0008
 
-#define ERR_CTO   0x00010000
-#define ERR_CCRC  0x00020000
-#define ERR_CEND  0x00040000
-#define ERR_CIDX  0x00080000
-#define ERR_DTO   0x00100000
-#define ERR_DCRC  0x00200000
-#define ERR_DEND  0x00400000
+/* SCSI */
+#define OP_TEST_UNIT_READY   0x00
+#define OP_REQUEST_SENSE     0x03
+#define OP_READ6             0x08
+#define OP_WRITE6            0x0A
+#define OP_INQUIRY           0x12
+#define OP_MODE_SELECT6      0x15
+#define OP_MODE_SENSE6       0x1A
+#define OP_START_STOP        0x1B
+#define OP_PREVENT_ALLOW     0x1E
+#define OP_READ_CAPACITY     0x25
+#define OP_READ10            0x28
+#define OP_WRITE10           0x2A
+#define OP_VERIFY10          0x2F
+#define OP_SYNC_CACHE10      0x35
+#define OP_MODE_SELECT10     0x55
+#define OP_MODE_SENSE10      0x5A
+#define OP_READ16            0x88
+#define OP_WRITE16           0x8A
+#define OP_VERIFY16          0x8F
+#define OP_SYNC_CACHE16      0x91
+#define OP_SAI16             0x9E
+#define OP_REPORT_LUNS       0xA0
+#define OP_READ12            0xA8
+#define OP_WRITE12           0xAA
 
-typedef struct _GOYA_SDHC {
-    volatile UCHAR       *Regs;
-    BOOLEAN              Crashdump;
-    volatile LONG        Remaining;       /* bytes still to move in the current data phase */
-    ULONG                BlockSize;
-    SDPORT_CAPABILITIES  Caps;
-} GOYA_SDHC;
+#define SCSI_CHECK_CONDITION 0x02
+#define KEY_NOT_READY        0x02
+#define KEY_MEDIUM_ERROR     0x03
+#define KEY_HW_ERROR         0x04
+#define KEY_ILLEGAL_REQUEST  0x05
 
-static volatile ULONG *gGpio;
+#define MAX_XFER_BLOCKS      128        /* 64 KiB per request */
 
-/* ---- register helpers ---- */
-static __forceinline ULONG  Rd32(GOYA_SDHC *H, ULONG o) { return READ_REGISTER_ULONG((volatile ULONG *)(H->Regs + o)); }
-static __forceinline USHORT Rd16(GOYA_SDHC *H, ULONG o) { return READ_REGISTER_USHORT((volatile USHORT *)(H->Regs + o)); }
-static __forceinline UCHAR  Rd8 (GOYA_SDHC *H, ULONG o) { return READ_REGISTER_UCHAR(H->Regs + o); }
-static __forceinline VOID   Wr32(GOYA_SDHC *H, ULONG o, ULONG v)  { WRITE_REGISTER_ULONG((volatile ULONG *)(H->Regs + o), v); }
-static __forceinline VOID   Wr16(GOYA_SDHC *H, ULONG o, USHORT v) { WRITE_REGISTER_USHORT((volatile USHORT *)(H->Regs + o), v); }
-static __forceinline VOID   Wr8 (GOYA_SDHC *H, ULONG o, UCHAR v)  { WRITE_REGISTER_UCHAR(H->Regs + o, v); }
+typedef struct _GOYA_EXT {
+    SD_HOST  Sd;
+    PUCHAR   Apmu;
+    BOOLEAN  InitDone;
+    UCHAR    Sense[3];                  /* key, asc, ascq of the last error */
+} GOYA_EXT, *PGOYA_EXT;
 
-static BOOLEAN CardPresentGpio(VOID)
+static VOID GoyaClocks(PGOYA_EXT X)
 {
-    if (gGpio == NULL) {
-        return TRUE;                              /* unknown (crash dump): assume inserted */
-    }
-    return (READ_REGISTER_ULONG(gGpio) & (1UL << GOYA_SD_CD_GPIO)) == 0;
-}
-
-static VOID ForceCardDetect(GOYA_SDHC *H)
-{
-    UCHAR c = Rd8(H, R_HOSTCTRL) | HC_CD_SIG_SEL;
-    if (CardPresentGpio()) c |= HC_CD_TEST_LVL; else c &= (UCHAR)~HC_CD_TEST_LVL;
-    Wr8(H, R_HOSTCTRL, c);
-}
-
-static VOID IntEnable(GOYA_SDHC *H, ULONG mask)
-{
-    ULONG v = Rd32(H, R_INTEN) | mask;
-    Wr32(H, R_INTEN, v);
-    if (!H->Crashdump) Wr32(H, R_SIGEN, v);
-}
-
-static VOID IntDisable(GOYA_SDHC *H, ULONG mask)
-{
-    ULONG v = Rd32(H, R_INTEN) & ~mask;
-    Wr32(H, R_INTEN, v);
-    Wr32(H, R_SIGEN, v);
-}
-
-/* sdport "standard events" are the SDHCI Normal(15:0)/Error(31:16) interrupt status bits */
-static ULONG StdEventsToMask(ULONG ev)  { return (ev & INT_EVT_MASK) | INT_ERR_ALL; }
-
-static NTSTATUS ErrorToStatus(ULONG e)
-{
-    if (e == 0) return STATUS_SUCCESS;
-    if (e & (ERR_CTO | ERR_DTO))   return STATUS_IO_TIMEOUT;
-    if (e & (ERR_CCRC | ERR_DCRC)) return STATUS_CRC_ERROR;
-    if (e & (ERR_CEND | ERR_DEND)) return STATUS_DEVICE_DATA_ERROR;
-    if (e & ERR_CIDX)              return STATUS_DEVICE_PROTOCOL_ERROR;
-    return STATUS_IO_DEVICE_ERROR;
-}
-
-/* ---- sdport callbacks ---- */
-
-static NTSTATUS GoyaGetSlotCount(SD_MINIPORT *Miniport, UCHAR *SlotCount)
-{
-    if (Miniport->ConfigurationInfo.BusType != SdBusTypeAcpi) return STATUS_NOT_SUPPORTED;
-    *SlotCount = 1;
-    return STATUS_SUCCESS;
-}
-
-static VOID GoyaGetCapabilities(PVOID Ext, SDPORT_CAPABILITIES *Caps)
-{
-    RtlCopyMemory(Caps, &((GOYA_SDHC *)Ext)->Caps, sizeof(*Caps));
-}
-
-static NTSTATUS GoyaInitialize(PVOID Ext, PHYSICAL_ADDRESS Phys, PVOID Virt, ULONG Length, BOOLEAN Crashdump)
-{
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    SDPORT_CAPABILITIES *c = &H->Caps;
-
-    UNREFERENCED_PARAMETER(Phys);
-    UNREFERENCED_PARAMETER(Length);
-    H->Regs = (volatile UCHAR *)Virt;
-    H->Crashdump = Crashdump;
-
-    RtlZeroMemory(c, sizeof(*c));
-    c->SpecVersion = 3;
-    c->MaximumOutstandingRequests = 1;
-    c->MaximumBlockSize = 512;
-    c->MaximumBlockCount = 0xFFFF;
-    c->BaseClockFrequencyKhz = GOYA_SD_BASE_CLOCK_HZ / 1000;
-    c->DmaDescriptorSize = 0;
-    c->AlignmentRequirement = sizeof(ULONG) - 1;
-    c->Flags.UsePioForRead = 1;
-    c->Flags.UsePioForWrite = 1;
-    c->Supported.ScatterGatherDma = 0;
-    c->Supported.HighSpeed = 1;
-    c->Supported.BusWidth8Bit = 0;                /* microSD slot: 4 data lines */
-    c->Supported.SignalingVoltage18V = 0;         /* no 1.8 V on this board */
-    c->Supported.Voltage33V = 1;
-    c->Supported.Voltage30V = 1;
-    c->Supported.DriverTypeA = 1;
-    c->Supported.DriverTypeB = 1;
-    c->Supported.DriverTypeC = 1;
-    c->Supported.DriverTypeD = 1;
-    c->Supported.Limit200mA = 1;
-    c->Supported.Limit400mA = 1;
-    c->Supported.Limit600mA = 1;
-    c->Supported.Limit800mA = 1;
-    c->Supported.AutoCmd12 = 1;
-
-    ForceCardDetect(H);
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS ResetHost(GOYA_SDHC *H, SDPORT_RESET_TYPE Type)
-{
-    UCHAR mask, v;
-    ULONG retries = 1000;
-
-    switch (Type) {
-    case SdResetTypeAll: mask = 0x01; break;
-    case SdResetTypeCmd: mask = 0x02; break;
-    case SdResetTypeDat: mask = 0x04; break;
-    default: return STATUS_INVALID_PARAMETER;
-    }
-
-    Wr8(H, R_SWRESET, mask);
-    do {
-        SdPortWait(100);
-        v = Rd8(H, R_SWRESET);
-    } while ((v & mask) && --retries);
-    if (v & mask) return STATUS_IO_TIMEOUT;
-
-    if (Type == SdResetTypeAll) {
-        Wr32(H, R_INTEN, 0);
-        Wr32(H, R_SIGEN, 0);
-        Wr32(H, R_INTSTS, 0xFFFFFFFF);
-        Wr8(H, R_TIMEOUT, 0x0E);                  /* longest data timeout */
-        Wr8(H, R_POWER, 0x0F);                    /* 3.3 V, bus power on (LDOs are firmware-enabled) */
-        ForceCardDetect(H);
-    }
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS SetClock(GOYA_SDHC *H, ULONG Khz)
-{
-    ULONG target = Khz * 1000, n, retries = 1000;
-    USHORT clk;
-
-    if (target == 0) target = 400000;
-    if (target >= GOYA_SD_BASE_CLOCK_HZ) {
-        n = 0;
-    } else {
-        n = (GOYA_SD_BASE_CLOCK_HZ + 2 * target - 1) / (2 * target);
-        if (n > 0x3FF) n = 0x3FF;
-    }
-
-    Wr16(H, R_CLKCTRL, 0);                        /* stop SDCLK */
-    clk = (USHORT)(((n & 0xFF) << 8) | (((n >> 8) & 3) << 6) | 0x0001);
-    Wr16(H, R_CLKCTRL, clk);
-    while (!(Rd16(H, R_CLKCTRL) & 0x0002) && --retries) SdPortWait(100);
-    if (!(Rd16(H, R_CLKCTRL) & 0x0002)) return STATUS_IO_TIMEOUT;
-    Wr16(H, R_CLKCTRL, (USHORT)(clk | 0x0004));   /* SDCLK on */
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS GoyaBusOperation(PVOID Ext, SDPORT_BUS_OPERATION *Op)
-{
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    UCHAR c;
-
-    switch (Op->Type) {
-    case SdResetHost:
-        return ResetHost(H, Op->Parameters.ResetType);
-    case SdSetClock:
-        return SetClock(H, Op->Parameters.FrequencyKhz);
-    case SdSetBusWidth:
-        c = Rd8(H, R_HOSTCTRL) & (UCHAR)~(HC_4BIT | HC_8BIT);
-        if (Op->Parameters.BusWidth == SdBusWidth4Bit) c |= HC_4BIT;
-        else if (Op->Parameters.BusWidth == SdBusWidth8Bit) c |= HC_8BIT;
-        Wr8(H, R_HOSTCTRL, c);
-        return STATUS_SUCCESS;
-    case SdSetBusSpeed:
-        c = Rd8(H, R_HOSTCTRL);
-        if (Op->Parameters.BusSpeed == SdBusSpeedNormal)      c &= (UCHAR)~HC_HISPEED;
-        else if (Op->Parameters.BusSpeed == SdBusSpeedHigh)   c |= HC_HISPEED;
-        else return STATUS_NOT_SUPPORTED;
-        Wr8(H, R_HOSTCTRL, c);
-        return STATUS_SUCCESS;
-    case SdSetSignalingVoltage:
-        return (Op->Parameters.SignalingVoltage == SdSignalingVoltage18) ? STATUS_NOT_SUPPORTED : STATUS_SUCCESS;
-    case SdSetVoltage:                            /* fixed 3.3 V rail */
-    case SdResetHw:
-    case SdSetDriveStrength:
-    case SdSetDriverType:
-    case SdSetPresetValue:
-    case SdSetBlockGapInterrupt:
-        return STATUS_SUCCESS;
-    case SdExecuteTuning:
-        return STATUS_NOT_SUPPORTED;
-    default:
-        return STATUS_INVALID_PARAMETER;
+    ULONG v;
+    if (!X->Apmu) return;
+    v = StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF));
+    if (!(v & SDH_CLK_ACLK_EN))
+        StorPortWriteRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF), v | SDH_CLK_ACLK_EN | 0x0003);
+    v = StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH1_OFF));
+    if ((v & 0x0013) != 0x0013) {       /* firmware left SDH1 off: same setting as Pxa988SdhciDxe */
+        StorPortWriteRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH1_OFF), SDH_CLK_VALUE);
+        StorPortStallExecution(20);
     }
 }
 
-static BOOLEAN GoyaGetCardDetect(PVOID Ext)
+static BOOLEAN GoyaInitCard(PGOYA_EXT X)
 {
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    BOOLEAN p = CardPresentGpio();
-    UCHAR c = Rd8(H, R_HOSTCTRL) | HC_CD_SIG_SEL;
-    if (p) c |= HC_CD_TEST_LVL; else c &= (UCHAR)~HC_CD_TEST_LVL;
-    Wr8(H, R_HOSTCTRL, c);
-    return p;
+    ULONG tries;
+    GoyaClocks(X);
+    for (tries = 0; tries < 4; tries++) {
+        if (SdInitCard(&X->Sd) == SD_OK) return TRUE;
+        if (X->Sd.SpeedLevel < 3) X->Sd.SpeedLevel++;
+    }
+    return FALSE;
 }
 
-static BOOLEAN GoyaGetWriteProtect(PVOID Ext)
+/* ---- Storport entry points ---- */
+
+static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Args,
+                             PPORT_CONFIGURATION_INFORMATION Cfg, PBOOLEAN Again)
+{
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
+    ULONG i;
+    UNREFERENCED_PARAMETER(HwContext); UNREFERENCED_PARAMETER(BusInfo);
+    UNREFERENCED_PARAMETER(Args); UNREFERENCED_PARAMETER(Again);
+
+    RtlZeroMemory(X, sizeof(*X));
+    X->Sd.Os = X;
+    for (i = 0; i < Cfg->NumberOfAccessRanges; i++) {
+        PACCESS_RANGE r = &(*Cfg->AccessRanges)[i];
+        if (r->RangeLength == 0) continue;
+        if (!X->Sd.Regs && r->RangeLength >= 0x100) {
+            X->Sd.Regs = (volatile UCHAR *)StorPortGetDeviceBase(X, Cfg->AdapterInterfaceType,
+                Cfg->SystemIoBusNumber, r->RangeStart, r->RangeLength, (BOOLEAN)!r->RangeInMemory);
+        } else if (!X->Apmu && r->RangeLength >= 8) {
+            X->Apmu = (PUCHAR)StorPortGetDeviceBase(X, Cfg->AdapterInterfaceType,
+                Cfg->SystemIoBusNumber, r->RangeStart, r->RangeLength, (BOOLEAN)!r->RangeInMemory);
+        }
+    }
+    if (!X->Sd.Regs) return SP_RETURN_BAD_CONFIG;
+
+    /* make sure a stale firmware setting can never raise an interrupt */
+    SD_WR32(&X->Sd, SDHC_SIGEN, 0);
+    SD_WR32(&X->Sd, SDHC_INTSTS, 0xFFFFFFFF);
+
+    Cfg->MaximumTransferLength = MAX_XFER_BLOCKS * SD_BLOCK;
+    Cfg->NumberOfPhysicalBreaks = MAX_XFER_BLOCKS + 1;
+    Cfg->AlignmentMask = 0;
+    Cfg->NumberOfBuses = 1;
+    Cfg->MaximumNumberOfTargets = 1;
+    Cfg->MaximumNumberOfLogicalUnits = 1;
+    Cfg->ScatterGather = TRUE;
+    Cfg->Master = TRUE;
+    Cfg->CachesData = FALSE;
+    Cfg->MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
+    Cfg->InitiatorBusId[0] = 7;
+    return SP_RETURN_FOUND;
+}
+
+static BOOLEAN GoyaPassiveInit(PVOID Ext)
+{
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
+    X->InitDone = TRUE;
+    if (!GoyaInitCard(X)) StorPortDebugPrint(0, "goyasdhc: card initialisation failed\n");
+    return TRUE;                        /* keep the adapter; I/O will retry the card init */
+}
+
+static BOOLEAN GoyaInitialize(PVOID Ext)
+{
+    /* Card init can take ~1 s: do it at PASSIVE_LEVEL when allowed (not in dump mode). */
+    if (StorPortEnablePassiveInitialization(Ext, GoyaPassiveInit)) return TRUE;
+    return GoyaPassiveInit(Ext);
+}
+
+static BOOLEAN GoyaInterrupt(PVOID Ext)
 {
     UNREFERENCED_PARAMETER(Ext);
-    return FALSE;                                 /* microSD slot has no WP switch */
+    return FALSE;                       /* polled; signal enables are always 0 */
 }
 
-static BOOLEAN GoyaInterrupt(PVOID Ext, PULONG Events, PULONG Errors, PBOOLEAN CardChange,
-                             PBOOLEAN SdioInterrupt, PBOOLEAN Tuning)
+static BOOLEAN GoyaResetBus(PVOID Ext, ULONG PathId)
 {
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    ULONG st = Rd32(H, R_INTSTS), ev;
-
-    UNREFERENCED_PARAMETER(CardChange);
-    UNREFERENCED_PARAMETER(SdioInterrupt);
-    UNREFERENCED_PARAMETER(Tuning);
-
-    if (st == 0) return FALSE;
-
-    if (st & (INT_BRR | INT_BWR)) {               /* re-armed by the next StartTransfer */
-        IntDisable(H, st & (INT_BRR | INT_BWR));
-    }
-    Wr32(H, R_INTSTS, st);
-
-    st &= ~(INT_CINS | INT_CRM | INT_CINT | INT_RETUNE);
-    ev = st & INT_EVT_MASK;
-    if (st & INT_ERR_ALL) ev |= INT_ERR;
-    *Events = ev;
-    *Errors = (st & INT_ERR_ALL) >> 16;
-    return (ev != 0) || (*Errors != 0);
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
+    X->Sd.Ready = FALSE;
+    GoyaInitCard(X);
+    StorPortCompleteRequest(Ext, (UCHAR)PathId, SP_UNTAGGED, SP_UNTAGGED, SRB_STATUS_BUS_RESET);
+    return TRUE;
 }
 
-static NTSTATUS SendCommand(GOYA_SDHC *H, SDPORT_REQUEST *Req)
+static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl(PVOID Ext, SCSI_ADAPTER_CONTROL_TYPE Type, PVOID Param)
 {
-    SDPORT_COMMAND *cmd = &Req->Command;
-    USHORT xfer = 0, c = 0;
-    ULONG required = INT_CC, wait = 0, inhibit = PRES_CMD_INHIBIT;
-
-    if (cmd->TransferType != SdTransferTypeNone && cmd->TransferType != SdTransferTypeUndefined) {
-        inhibit |= PRES_DAT_INHIBIT;
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
+    switch (Type) {
+    case ScsiQuerySupportedControlTypes: {
+        PSCSI_SUPPORTED_CONTROL_TYPE_LIST l = (PSCSI_SUPPORTED_CONTROL_TYPE_LIST)Param;
+        if (l->MaxControlType > ScsiQuerySupportedControlTypes) l->SupportedTypeList[ScsiQuerySupportedControlTypes] = TRUE;
+        if (l->MaxControlType > ScsiStopAdapter) l->SupportedTypeList[ScsiStopAdapter] = TRUE;
+        if (l->MaxControlType > ScsiRestartAdapter) l->SupportedTypeList[ScsiRestartAdapter] = TRUE;
+        return ScsiAdapterControlSuccess;
     }
-    if (cmd->ResponseType == SdResponseTypeR1B || cmd->ResponseType == SdResponseTypeR5B) {
-        inhibit |= PRES_DAT_INHIBIT;
+    case ScsiStopAdapter:
+        return ScsiAdapterControlSuccess;
+    case ScsiRestartAdapter:            /* resume: the controller may have lost its state */
+        X->Sd.Ready = FALSE;
+        GoyaInitCard(X);
+        return ScsiAdapterControlSuccess;
+    default:
+        return ScsiAdapterControlUnsuccessful;
     }
-    if (cmd->Type == SdCommandTypeAbort) inhibit &= ~PRES_DAT_INHIBIT;
+}
 
-    while ((Rd32(H, R_PRESENT) & inhibit) && wait < 100000) { SdPortWait(10); wait += 10; }
-    if (Rd32(H, R_PRESENT) & inhibit) return STATUS_DEVICE_BUSY;
+static VOID SetSense(PSCSI_REQUEST_BLOCK Srb, PGOYA_EXT X, UCHAR Key, UCHAR Asc, UCHAR Ascq)
+{
+    PUCHAR s = (PUCHAR)Srb->SenseInfoBuffer;
+    X->Sense[0] = Key; X->Sense[1] = Asc; X->Sense[2] = Ascq;
+    Srb->ScsiStatus = SCSI_CHECK_CONDITION;
+    Srb->SrbStatus = SRB_STATUS_ERROR;
+    if (s && Srb->SenseInfoBufferLength >= 14) {
+        RtlZeroMemory(s, Srb->SenseInfoBufferLength);
+        s[0] = 0x70; s[2] = Key; s[7] = 10; s[12] = Asc; s[13] = Ascq;
+        Srb->SrbStatus |= SRB_STATUS_AUTOSENSE_VALID;
+    }
+}
 
-    if (cmd->TransferType != SdTransferTypeNone && cmd->TransferType != SdTransferTypeUndefined) {
-        H->BlockSize = cmd->BlockSize;
-        Wr16(H, R_BLKSIZE, (USHORT)(0x7000 | (cmd->BlockSize & 0xFFF)));
-        Wr16(H, R_BLKCOUNT, (USHORT)cmd->BlockCount);
-        if (cmd->BlockCount > 1) {
-            xfer |= 0x0020 | 0x0002;              /* multi block, block count enable */
-            if (cmd->TransferType != SdTransferTypeMultiBlockNoStop) xfer |= 0x0004; /* Auto CMD12 */
+static VOID ReturnData(PSCSI_REQUEST_BLOCK Srb, const VOID *Data, ULONG Len)
+{
+    if (Len > Srb->DataTransferLength) Len = Srb->DataTransferLength;
+    if (Len && Srb->DataBuffer) RtlCopyMemory(Srb->DataBuffer, Data, Len);
+    Srb->DataTransferLength = Len;
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+}
+
+static ULONG Be32(const UCHAR *p) { return ((ULONG)p[0] << 24) | ((ULONG)p[1] << 16) | ((ULONG)p[2] << 8) | p[3]; }
+static VOID  PutBe32(PUCHAR p, ULONG v) { p[0] = (UCHAR)(v >> 24); p[1] = (UCHAR)(v >> 16); p[2] = (UCHAR)(v >> 8); p[3] = (UCHAR)v; }
+
+static BOOLEAN EnsureCard(PGOYA_EXT X)
+{
+    if (!X->Sd.Ready) GoyaInitCard(X);
+    return X->Sd.Ready;
+}
+
+static VOID DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
+{
+    const UCHAR *cdb = Srb->Cdb;
+    ULONGLONG lba;
+    ULONG n, done;
+    SD_STATUS st;
+
+    switch (cdb[0]) {
+    case OP_READ6: case OP_WRITE6:
+        lba = ((ULONG)(cdb[1] & 0x1F) << 16) | ((ULONG)cdb[2] << 8) | cdb[3];
+        n = cdb[4] ? cdb[4] : 256; break;
+    case OP_READ10: case OP_WRITE10:
+        lba = Be32(cdb + 2); n = ((ULONG)cdb[7] << 8) | cdb[8]; break;
+    case OP_READ12: case OP_WRITE12:
+        lba = Be32(cdb + 2); n = Be32(cdb + 6); break;
+    default:
+        lba = ((ULONGLONG)Be32(cdb + 2) << 32) | Be32(cdb + 6); n = Be32(cdb + 10); break;
+    }
+
+    if (n == 0) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return; }
+    if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); return; }
+    if (lba + n > X->Sd.Blocks) { SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x21, 0); return; }
+    if ((ULONGLONG)n * SD_BLOCK > Srb->DataTransferLength || !Srb->DataBuffer) {
+        SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x24, 0); return;
+    }
+
+    done = 0;
+    while (n) {
+        ULONG chunk = n > MAX_XFER_BLOCKS ? MAX_XFER_BLOCKS : n;
+        PUCHAR p = (PUCHAR)Srb->DataBuffer + done * SD_BLOCK;
+        st = SdTransfer(&X->Sd, (BOOLEAN)!Write, lba, chunk, p);
+        done += chunk;
+        if (st != SD_OK) {
+            SetSense(Srb, X, st == SD_ETIMEOUT || st == SD_ENOCARD ? KEY_HW_ERROR : KEY_MEDIUM_ERROR,
+                     Write ? 0x0C : 0x11, 0);
+            return;
         }
-        if (cmd->TransferDirection == SdTransferDirectionRead) xfer |= 0x0010;
-        c |= 0x0020;                              /* data present */
-        if (cmd->TransferDirection == SdTransferDirectionRead) required |= INT_BRR;
-        else required |= INT_BWR;
-        IntEnable(H, required & (INT_BRR | INT_BWR));
-    } else {
-        cmd->BlockCount = 0;
-        cmd->Length = 0;
+        lba += chunk; n -= chunk;
     }
-    InterlockedExchange(&H->Remaining, (LONG)cmd->Length);
-
-    switch (cmd->ResponseType) {
-    case SdResponseTypeNone: break;
-    case SdResponseTypeR1: case SdResponseTypeR5: case SdResponseTypeR6:
-        c |= 0x0002 | 0x0008 | 0x0010; break;     /* 48 bit, CRC + index check */
-    case SdResponseTypeR1B: case SdResponseTypeR5B:
-        c |= 0x0003 | 0x0008 | 0x0010; break;     /* 48 bit + busy */
-    case SdResponseTypeR2:
-        c |= 0x0001 | 0x0008; break;              /* 136 bit */
-    case SdResponseTypeR3: case SdResponseTypeR4:
-        c |= 0x0002; break;
-    default:
-        return STATUS_INVALID_PARAMETER;
-    }
-    switch (cmd->Type) {
-    case SdCommandTypeSuspend: c |= 0x0040; break;
-    case SdCommandTypeResume:  c |= 0x0080; break;
-    case SdCommandTypeAbort:   c |= 0x00C0; break;
-    default: break;
-    }
-    c |= (USHORT)(cmd->Index << 8);
-
-    Req->RequiredEvents = required;
-    Wr32(H, R_ARG, cmd->Argument);
-    Wr16(H, R_XFER, xfer);
-    Wr16(H, R_CMD, c);
-    return STATUS_PENDING;
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
 }
 
-static NTSTATUS StartTransfer(GOYA_SDHC *H, SDPORT_REQUEST *Req)
+static VOID DoInquiry(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
 {
-    SDPORT_COMMAND *cmd = &Req->Command;
-    ULONG chunk = (ULONG)H->Remaining, words, i, need;
-    PULONG buf = (PULONG)cmd->DataBuffer;
-
-    if (chunk > H->BlockSize) chunk = H->BlockSize;
-    words = chunk / sizeof(ULONG);
-    if (cmd->TransferDirection == SdTransferDirectionRead) {
-        for (i = 0; i < words; i++) buf[i] = READ_REGISTER_ULONG((volatile ULONG *)(H->Regs + R_BUFFER));
-    } else {
-        for (i = 0; i < words; i++) WRITE_REGISTER_ULONG((volatile ULONG *)(H->Regs + R_BUFFER), buf[i]);
-    }
-    InterlockedExchangeAdd(&H->Remaining, -(LONG)chunk);
-
-    if (H->Remaining > 0) {
-        cmd->DataBuffer += chunk;
-        need = (cmd->TransferDirection == SdTransferDirectionRead) ? INT_BRR : INT_BWR;
-        Req->Status = STATUS_MORE_PROCESSING_REQUIRED;
-        IntEnable(H, need);
-    } else {
-        need = INT_TC;
-        Req->Status = STATUS_SUCCESS;
-    }
-    Req->RequiredEvents = need;
-    return STATUS_PENDING;
-}
-
-static NTSTATUS GoyaIssueRequest(PVOID Ext, SDPORT_REQUEST *Req)
-{
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    Req->Status = STATUS_IO_DEVICE_ERROR;
-    switch (Req->Type) {
-    case SdRequestTypeCommandNoTransfer:
-    case SdRequestTypeCommandWithTransfer:
-        return SendCommand(H, Req);
-    case SdRequestTypeStartTransfer:
-        return StartTransfer(H, Req);
-    default:
-        return STATUS_NOT_SUPPORTED;
-    }
-}
-
-static VOID GoyaGetResponse(PVOID Ext, SDPORT_COMMAND *Cmd, PVOID Out)
-{
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    PULONG r = (PULONG)Out;
-
-    switch (Cmd->ResponseType) {
-    case SdResponseTypeNone:
-        break;
-    case SdResponseTypeR2:
-        r[0] = Rd32(H, R_RESP0);      r[1] = Rd32(H, R_RESP0 + 4);
-        r[2] = Rd32(H, R_RESP0 + 8);  r[3] = Rd32(H, R_RESP0 + 12);
-        break;
-    default:
-        r[0] = Rd32(H, R_RESP0);
-        break;
-    }
-}
-
-static VOID GoyaToggleEvents(PVOID Ext, ULONG Mask, BOOLEAN Enable)
-{
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-    ULONG m = StdEventsToMask(Mask);
-    if (Enable) IntEnable(H, m); else IntDisable(H, m);
-}
-
-static VOID GoyaClearEvents(PVOID Ext, ULONG Mask)
-{
-    Wr32((GOYA_SDHC *)Ext, R_INTSTS, StdEventsToMask(Mask));
-}
-
-static VOID GoyaRequestDpc(PVOID Ext, SDPORT_REQUEST *Req, ULONG Events, ULONG Errors)
-{
-    GOYA_SDHC *H = (GOYA_SDHC *)Ext;
-
-    Req->RequiredEvents &= ~Events;
-    if (Errors) {
-        Req->RequiredEvents = 0;
-        Req->Status = ErrorToStatus(Errors << 16);
-        SdPortCompleteRequest(Req, Req->Status);
-    } else if (Req->RequiredEvents == 0) {
-        if (Req->Status != STATUS_MORE_PROCESSING_REQUIRED) {
-            Req->Status = STATUS_SUCCESS;
-            if (Req->Command.ResponseType == SdResponseTypeR1B ||
-                Req->Command.ResponseType == SdResponseTypeR5B) {
-                ULONG retries = 1000;
-                while ((Rd32(H, R_PRESENT) & PRES_DAT_ACTIVE) && retries--) SdPortWait(100);
-                if (Rd32(H, R_PRESENT) & PRES_DAT_ACTIVE) Req->Status = STATUS_IO_TIMEOUT;
-            }
+    UCHAR d[96];
+    RtlZeroMemory(d, sizeof(d));
+    if (Srb->Cdb[1] & 1) {                       /* VPD */
+        switch (Srb->Cdb[2]) {
+        case 0x00:
+            d[1] = 0x00; d[3] = 2; d[4] = 0x00; d[5] = 0x80;
+            ReturnData(Srb, d, 6); return;
+        case 0x80: {                             /* unit serial = CID product serial number */
+            ULONG psn = SdCsdBits(X->Sd.Cid, 24, 32), i;
+            d[1] = 0x80; d[3] = 8;
+            for (i = 0; i < 8; i++) d[4 + i] = "0123456789ABCDEF"[(psn >> (28 - 4 * i)) & 0xF];
+            ReturnData(Srb, d, 12); return;
         }
-        SdPortCompleteRequest(Req, Req->Status);
+        default:
+            SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x24, 0); return;
+        }
+    }
+    d[0] = 0x00;                                 /* direct access block device */
+    d[1] = 0x00;                                 /* not removable: Windows will not boot from removable disks */
+    d[2] = 0x05; d[3] = 0x02; d[4] = 31;
+    RtlCopyMemory(d + 8,  "GOYA    ", 8);
+    RtlCopyMemory(d + 16, "microSD boot    ", 16);
+    RtlCopyMemory(d + 32, "1.0 ", 4);
+    ReturnData(Srb, d, 36);
+}
+
+static VOID DoModeSense(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Ten)
+{
+    UCHAR d[64], page = Srb->Cdb[2] & 0x3F;
+    ULONG h = Ten ? 8 : 4, len = h;
+    UNREFERENCED_PARAMETER(X);
+    RtlZeroMemory(d, sizeof(d));
+    if (page == 0x08 || page == 0x3F) {          /* caching page: no write cache */
+        d[h] = 0x08; d[h + 1] = 0x12;
+        len += 20;
+    }
+    if (Ten) { d[0] = (UCHAR)((len - 2) >> 8); d[1] = (UCHAR)(len - 2); }
+    else d[0] = (UCHAR)(len - 1);
+    ReturnData(Srb, d, len);
+}
+
+static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
+{
+    UCHAR d[32];
+    RtlZeroMemory(d, sizeof(d));
+    switch (Srb->Cdb[0]) {
+    case OP_TEST_UNIT_READY:
+        if (EnsureCard(X)) Srb->SrbStatus = SRB_STATUS_SUCCESS;
+        else SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0);
+        break;
+    case OP_REQUEST_SENSE:
+        d[0] = 0x70; d[2] = X->Sense[0]; d[7] = 10; d[12] = X->Sense[1]; d[13] = X->Sense[2];
+        X->Sense[0] = X->Sense[1] = X->Sense[2] = 0;
+        ReturnData(Srb, d, 18);
+        break;
+    case OP_INQUIRY:
+        DoInquiry(X, Srb);
+        break;
+    case OP_READ_CAPACITY:
+        if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); break; }
+        PutBe32(d, X->Sd.Blocks - 1 > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (ULONG)(X->Sd.Blocks - 1));
+        PutBe32(d + 4, SD_BLOCK);
+        ReturnData(Srb, d, 8);
+        break;
+    case OP_SAI16:
+        if ((Srb->Cdb[1] & 0x1F) != 0x10) { SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x20, 0); break; }
+        if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); break; }
+        PutBe32(d, (ULONG)((X->Sd.Blocks - 1) >> 32));
+        PutBe32(d + 4, (ULONG)(X->Sd.Blocks - 1));
+        PutBe32(d + 8, SD_BLOCK);
+        ReturnData(Srb, d, 32);
+        break;
+    case OP_READ6: case OP_READ10: case OP_READ12: case OP_READ16:
+        DoReadWrite(X, Srb, FALSE);
+        break;
+    case OP_WRITE6: case OP_WRITE10: case OP_WRITE12: case OP_WRITE16:
+        DoReadWrite(X, Srb, TRUE);
+        break;
+    case OP_MODE_SENSE6:  DoModeSense(X, Srb, FALSE); break;
+    case OP_MODE_SENSE10: DoModeSense(X, Srb, TRUE);  break;
+    case OP_REPORT_LUNS:
+        d[3] = 8;                                /* one LUN, LUN 0 */
+        ReturnData(Srb, d, 16);
+        break;
+    case OP_START_STOP: case OP_PREVENT_ALLOW: case OP_VERIFY10: case OP_VERIFY16:
+    case OP_SYNC_CACHE10: case OP_SYNC_CACHE16: case OP_MODE_SELECT6: case OP_MODE_SELECT10:
+        Srb->DataTransferLength = 0;
+        Srb->SrbStatus = SRB_STATUS_SUCCESS;
+        break;
+    default:
+        SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x20, 0);
+        break;
     }
 }
 
-static VOID GoyaSaveContext(PVOID Ext)    { UNREFERENCED_PARAMETER(Ext); }
-static VOID GoyaRestoreContext(PVOID Ext) { ForceCardDetect((GOYA_SDHC *)Ext); }
-static VOID GoyaCleanup(SD_MINIPORT *M)   { UNREFERENCED_PARAMETER(M); }
-
-NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
 {
-    SDPORT_INITIALIZATION_DATA init;
-    PHYSICAL_ADDRESS gpio;
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
 
-    if (KeGetCurrentIrql() < DISPATCH_LEVEL && gGpio == NULL) {
-        gpio.QuadPart = GOYA_GPIO_PHYS;
-        gGpio = (volatile ULONG *)MmMapIoSpace(gpio, GOYA_GPIO_LEN, MmNonCached);
+    switch (Srb->Function) {
+    case SRB_FUNCTION_EXECUTE_SCSI:
+        if (Srb->PathId != 0 || Srb->TargetId != 0) Srb->SrbStatus = SRB_STATUS_SELECTION_TIMEOUT;
+        else if (Srb->Lun != 0) Srb->SrbStatus = SRB_STATUS_INVALID_LUN;
+        else { Srb->ScsiStatus = 0; DoScsi(X, Srb); }
+        break;
+    case SRB_FUNCTION_RESET_BUS:
+    case SRB_FUNCTION_RESET_DEVICE:
+    case SRB_FUNCTION_RESET_LOGICAL_UNIT:
+        X->Sd.Ready = FALSE;
+        GoyaInitCard(X);
+        Srb->SrbStatus = SRB_STATUS_SUCCESS;
+        break;
+    case SRB_FUNCTION_FLUSH:
+    case SRB_FUNCTION_SHUTDOWN:
+    case SRB_FUNCTION_PNP:
+    case SRB_FUNCTION_POWER:
+    case SRB_FUNCTION_ABORT_COMMAND:
+        Srb->SrbStatus = SRB_STATUS_SUCCESS;
+        break;
+    default:
+        Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+        break;
     }
+    StorPortNotification(RequestComplete, Ext, Srb);
+    return TRUE;
+}
 
-    RtlZeroMemory(&init, sizeof(init));
-    init.StructureSize = sizeof(init);
-    init.GetSlotCount = GoyaGetSlotCount;
-    init.GetSlotCapabilities = GoyaGetCapabilities;
-    init.Initialize = GoyaInitialize;
-    init.IssueBusOperation = GoyaBusOperation;
-    init.GetCardDetectState = GoyaGetCardDetect;
-    init.GetWriteProtectState = GoyaGetWriteProtect;
-    init.Interrupt = GoyaInterrupt;
-    init.IssueRequest = GoyaIssueRequest;
-    init.GetResponse = GoyaGetResponse;
-    init.ToggleEvents = GoyaToggleEvents;
-    init.ClearEvents = GoyaClearEvents;
-    init.RequestDpc = GoyaRequestDpc;
-    init.SaveContext = GoyaSaveContext;
-    init.RestoreContext = GoyaRestoreContext;
-    init.PowerControlCallback = NULL;
-    init.Cleanup = GoyaCleanup;
-    init.PrivateExtensionSize = sizeof(GOYA_SDHC);
-    init.CrashdumpSupported = TRUE;
+ULONG DriverEntry(PVOID DriverObject, PVOID RegistryPath)
+{
+    static const INTERFACE_TYPE types[] = { Internal, ACPIBus, PNPBus, Isa };
+    HW_INITIALIZATION_DATA h;
+    ULONG i, st, best = 0xC0000001UL;   /* STATUS_UNSUCCESSFUL */
 
-    return SdPortInitialize(DriverObject, RegistryPath, &init);
+    /* The ACPI PDO's legacy bus type is not documented for ARM; register for every likely one. */
+    for (i = 0; i < GOYA_COUNT(types); i++) {
+        RtlZeroMemory(&h, sizeof(h));
+        h.HwInitializationDataSize = sizeof(h);
+        h.AdapterInterfaceType = types[i];
+        h.HwInitialize = GoyaInitialize;
+        h.HwStartIo = GoyaStartIo;
+        h.HwInterrupt = GoyaInterrupt;
+        h.HwFindAdapter = GoyaFindAdapter;
+        h.HwResetBus = GoyaResetBus;
+        h.HwAdapterControl = GoyaAdapterControl;
+        h.DeviceExtensionSize = sizeof(GOYA_EXT);
+        h.SpecificLuExtensionSize = 0;
+        h.SrbExtensionSize = 0;
+        h.NumberOfAccessRanges = 2;
+        h.MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
+        h.NeedPhysicalAddresses = TRUE;
+        h.TaggedQueuing = FALSE;
+        h.AutoRequestSense = TRUE;
+        h.MultipleRequestPerLu = FALSE;
+        st = StorPortInitialize(DriverObject, RegistryPath, &h, NULL);
+        if (st == 0 || best != 0) best = st;
+    }
+    return best;
 }

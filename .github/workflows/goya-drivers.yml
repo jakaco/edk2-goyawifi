@@ -36,7 +36,7 @@ jobs:
           set KITS=%ProgramFiles(x86)%\Windows Kits\10
           set DDK_INC_PATH=%KITS%\Include\10.0.19041.0
           set LIB=%KITS%\Lib\10.0.19041.0\km\arm;%LIB%
-          if "${{ matrix.driver }}"=="goyasdhc" (call WinRT\drivers\build-sdport.cmd goyasdhc) else (call WinRT\drivers\build-kmdf.cmd ${{ matrix.driver }})
+          if "${{ matrix.driver }}"=="goyasdhc" (call WinRT\drivers\build-storport.cmd goyasdhc) else (call WinRT\drivers\build-kmdf.cmd ${{ matrix.driver }})
 
       - uses: actions/upload-artifact@v4
         with:

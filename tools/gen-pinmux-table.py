@@ -4,8 +4,11 @@
 usage: gen-pinmux-table.py <pxa988-pinfunc.h> <pxa986-samsung-goyawifi-pins.dtsi> <out.h>
 
 Each pin of each group becomes one entry {MFPR offset, clear mask, set value, group index}.
-Pin configuration semantics follow pinctrl-single: AF in bits [2:0]; bias-pullup uses the
-"enabled" cell (cell 1) under mask PULL_MASK; drive-strength / low-power-mode use cell 0 / mask.
+Pin configuration semantics follow the pinctrl-single binding:
+  bias-pullup    = <value-to-write enabled-pattern disabled-pattern mask>  -> write cell 0 under cell 3
+  drive-strength = <value mask>, low-power-mode = <value mask>
+Groups that must not be touched while Windows runs from them (storage, debug UART, the alternative
+idle state of TWSI1) are left out of PINMUX_DEFAULT_MASK.
 """
 import re, sys
 
@@ -46,11 +49,11 @@ for gi, (name, plist, pull, ds, lpm) in enumerate(groups):
     for pname, off, af in plist:
         clr, setv = 0x7, af
         if pull:
-            clr |= pull[3]; setv |= pull[1]
+            clr |= pull[3]; setv |= pull[0] & pull[3]
         if ds:
-            clr |= ds[1]; setv |= ds[0]
+            clr |= ds[1]; setv |= ds[0] & ds[1]
         if lpm:
-            clr |= lpm[1]; setv |= lpm[0]
+            clr |= lpm[1]; setv |= lpm[0] & lpm[1]
         entries.append((off, clr, setv, gi, pname, name))
 
 with open(out, 'w') as f:
@@ -59,6 +62,16 @@ with open(out, 'w') as f:
     f.write('#define PINMUX_GROUP_COUNT %d\n' % len(groups))
     for gi, g in enumerate(groups):
         f.write('#define PINMUX_GROUP_%s %d\n' % (g[0].upper(), gi))
+    skip = {'sdh1_pins', 'sdh3_emmc_pins', 'uart1_pins', 'twsi1_gpio_pins'}
+    mask = 0
+    for gi, g in enumerate(groups):
+        if g[0] not in skip:
+            mask |= 1 << gi
+    f.write('#define PINMUX_DEFAULT_MASK 0x%08XUL   /* all but: %s */\n' % (mask, ', '.join(sorted(skip))))
+    f.write('static const char * const gPinmuxGroupNames[PINMUX_GROUP_COUNT] = {\n')
+    for g in groups:
+        f.write('    "%s",\n' % g[0])
+    f.write('};\n')
     f.write('static const PINMUX_ENTRY gPinmuxTable[] = {\n')
     for off, clr, setv, gi, pname, name in entries:
         f.write('    { 0x%04X, 0x%04X, 0x%04X, %d, 0 }, /* %s: %s */\n' % (off, clr, setv, gi, name, pname))
