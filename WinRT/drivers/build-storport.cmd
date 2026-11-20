@@ -18,7 +18,7 @@ cl /nologo /c /kernel /GS- /Oi /Zi /W3 /WX /wd4201 /wd4214 /wd4100 %DEFS% %INC% 
 link /nologo /DRIVER /NODEFAULTLIB /SUBSYSTEM:NATIVE /ENTRY:DriverEntry /INTEGRITYCHECK /LIBPATH:%KL% ^
      /OUT:%N%.sys %N%.obj storport.lib ntoskrnl.lib hal.lib BufferOverflowFastFailK.lib libcntpr.lib || exit /b 1
 echo ---- imports (must only be storport.sys / ntoskrnl / hal) ----
-dumpbin /nologo /imports %N%.sys | findstr /i ".sys .dll"
+dumpbin /nologo /imports %N%.sys
 echo built %N%.sys
 exit /b 0
 
