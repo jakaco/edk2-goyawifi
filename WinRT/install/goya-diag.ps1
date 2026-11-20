@@ -9,6 +9,7 @@
     goya-diag.cmd <W:> minidump on             small crash dumps to \Windows\Minidump (needs a page file; set)
     goya-diag.cmd <W:> disable <service|all>   Start=4 (goyasdhc, goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
     goya-diag.cmd <W:> enable <service|all>    back to the INF start type
+    goya-diag.cmd <W:> only <service>          enable just this Goya driver, disable the others (WinPE: goyasdhc too)
     goya-diag.cmd <W:> bsod-details            stop screen stays up (no auto restart) and shows the 4 parameters
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
     goya-diag.cmd <W:> halext-files            copy System32\HalExt*.dll, hal.dll, ntoskrnl.exe + versions to .\goya-halext-<time>
@@ -45,7 +46,7 @@ function Run([string]$CmdLine, [switch]$Show) {
     return $LASTEXITCODE
 }
 
-$Changes = @('verifier-off', 'bsod-details', 'minidump', 'disable', 'enable', 'halext', 'halext-install')
+$Changes = @('verifier-off', 'bsod-details', 'minidump', 'disable', 'enable', 'only', 'halext', 'halext-install')
 
 function Mount-PE {
     if (-not $IsPE) { return }
@@ -222,6 +223,21 @@ switch ($act) {
                 $k = "$cs\Services\$n"
                 if (-not (Test-Path $k)) { Write-Host "$n is not installed in this image (skipped)"; continue }
                 $start = if ($Action -eq 'disable') { 4 } else { $GoyaServices[$n] }
+                Set-ItemProperty $k -Name Start -Value $start -Type DWord
+                Write-Host "$n Start=$start"
+            }
+        }
+    }
+    'only' {
+        if (-not $Arg -or -not $GoyaServices.Contains($Arg) -or $Arg -eq 'mshidkmdf') { throw "service must be one of: $(($GoyaServices.Keys | Where-Object { $_ -ne 'mshidkmdf' }) -join ', ')" }
+        With-SystemHive {
+            param($cs)
+            foreach ($n in @($GoyaServices.Keys | Where-Object { $_ -ne 'mshidkmdf' })) {
+                $k = "$cs\Services\$n"
+                if (-not (Test-Path $k)) { continue }
+                if ($n -eq $Arg) { $start = $GoyaServices[$n] }
+                elseif ($n -eq 'goyasdhc' -and -not $IsPE) { continue }   # boot disk of a full install stays on
+                else { $start = 4 }
                 Set-ItemProperty $k -Name Start -Value $start -Type DWord
                 Write-Host "$n Start=$start"
             }
