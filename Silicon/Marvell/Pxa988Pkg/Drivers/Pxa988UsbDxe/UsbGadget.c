@@ -36,6 +36,7 @@
 //
 #define UDC_USBCMD      0x140
 #define UDC_USBSTS      0x144
+#define UDC_USBINTR     0x148
 #define UDC_DEVADDR     0x154
 #define UDC_EPLIST      0x158
 #define UDC_PORTSC      0x184
@@ -56,6 +57,7 @@
 #define CMD_ITC8        (8U << 16)
 #define STS_URI         BIT6
 #define STS_PCI         BIT2
+#define STS_HCH         BIT12
 #define PORTSC_PFSC     BIT24
 #define USBMODE_DEVICE  2
 
@@ -740,6 +742,43 @@ STATIC USB_SERIAL_DEVICE_PATH  mSerialPath = {
 //
 // ---------------------------------------------------------------------------------------------
 //
+STATIC EFI_EVENT  mExitBsEvent;
+
+/**
+  ExitBootServices: stop the device controller. Its queue heads, transfer descriptors and buffers
+  live in boot-services memory that the OS reuses; a controller left running (D+ pull-up on, OUT
+  endpoints primed) would DMA host traffic into the OS's memory. Reset = run off, pull-up off,
+  all endpoints disabled; the host sees a disconnect.
+**/
+STATIC
+VOID
+EFIAPI
+OnExitBootServices (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  UINTN  I;
+
+  UDC_W32 (UDC_USBCMD, UDC_R32 (UDC_USBCMD) & ~CMD_RUN);
+  for (I = 0; I < 20 && (UDC_R32 (UDC_USBSTS) & STS_HCH) == 0; I++) {
+    MicroSecondDelay (100);
+  }
+
+  UDC_W32 (UDC_EPFLUSH, 0xFFFFFFFF);
+  for (I = 0; I < 100 && UDC_R32 (UDC_EPFLUSH) != 0; I++) {
+    MicroSecondDelay (10);
+  }
+
+  UDC_W32 (UDC_USBINTR, 0);
+  UDC_W32 (UDC_USBCMD, CMD_RST);
+  for (I = 0; I < 100 && (UDC_R32 (UDC_USBCMD) & CMD_RST) != 0; I++) {
+    MicroSecondDelay (100);
+  }
+
+  UDC_W32 (UDC_EPLIST, 0);
+}
+
 EFI_STATUS
 UsbGadgetStart (
   OUT CHAR8  *Report,
@@ -779,6 +818,8 @@ UsbGadgetStart (
   ConfigureEp0 ();
   FlushAll ();
   UDC_W32 (UDC_USBCMD, UDC_R32 (UDC_USBCMD) | CMD_ITC8 | CMD_RUN);        // D+ pull-up on: the host sees us now
+
+  gBS->CreateEvent (EVT_SIGNAL_EXIT_BOOT_SERVICES, TPL_NOTIFY, OnExitBootServices, NULL, &mExitBsEvent);
 
   Status = gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK, OnTimer, NULL, &mTimer);
   if (!EFI_ERROR (Status)) {

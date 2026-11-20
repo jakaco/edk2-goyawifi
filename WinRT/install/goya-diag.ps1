@@ -9,6 +9,7 @@
     goya-diag.cmd <W:> minidump on             small crash dumps to \Windows\Minidump (needs a page file; set)
     goya-diag.cmd <W:> disable <service>       Start=4 (e.g. goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
     goya-diag.cmd <W:> enable <service>        back to the INF start type
+    goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
 
   <W:> is the card's Windows partition as it appears on the PC. The SYSTEM (boot) partition is found
   automatically on the same disk for the BCD changes.
@@ -137,5 +138,23 @@ switch ($Action.ToLower()) {
             Write-Host "$Arg Start=$start"
         }
     }
-    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>)" }
+    'halext' {
+        With-SystemHive {
+            param($cs)
+            $k = "$cs\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001"
+            if ($Arg -eq 'off') {
+                $v = (Get-ItemProperty $k -ErrorAction SilentlyContinue).HALExtension
+                if ($v) { Set-ItemProperty $k -Name HALExtension.goyaoff -Value $v; Remove-ItemProperty $k -Name HALExtension }
+                Write-Host 'HAL extension disabled for the next boot (expect a different stop code if it is involved)'
+            } else {
+                if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null }
+                $v = (Get-ItemProperty $k -ErrorAction SilentlyContinue).'HALExtension.goyaoff'
+                if (-not $v) { $v = '\SystemRoot\System32\HalExtMmpTimer.dll' }
+                Set-ItemProperty $k -Name HALExtension -Value $v
+                Remove-ItemProperty $k -Name HALExtension.goyaoff -ErrorAction SilentlyContinue
+                Write-Host "HAL extension enabled: $v"
+            }
+        }
+    }
+    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on)" }
 }
