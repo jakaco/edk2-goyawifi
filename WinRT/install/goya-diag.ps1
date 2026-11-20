@@ -11,8 +11,9 @@
     goya-diag.cmd <W:> enable <service>        back to the INF start type
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
 
-  <W:> is the card's Windows partition as it appears on the PC. The SYSTEM (boot) partition is found
-  automatically on the same disk for the BCD changes.
+  <W:> is the card as it appears on the PC: either the Windows partition of a full Windows RT install, or
+  a WinPE card (\sources\boot.wim). On a WinPE card the registry changes are made inside boot.wim (it is
+  mounted with DISM, changed and committed; takes a minute). The BCD is found automatically.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Win,
@@ -21,14 +22,43 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Win = $Win.TrimEnd('\').TrimEnd(':') + ':'
-if (-not (Test-Path "$Win\Windows\System32\config\SYSTEM")) { throw "$Win does not hold a Windows installation" }
+$Mount = Join-Path $env:TEMP 'goyadiag-mount'
+$IsPE = $false
+if (Test-Path "$Win\Windows\System32\config\SYSTEM") {
+    $Root = $Win
+} elseif (Test-Path "$Win\sources\boot.wim") {
+    $IsPE = $true
+    $Root = $Mount
+} else {
+    throw "$Win holds neither a Windows installation (\Windows) nor a WinPE card (\sources\boot.wim)"
+}
+$Changes = @('verifier-off', 'minidump', 'disable', 'enable', 'halext')
+
+function Mount-PE {
+    if (-not $IsPE) { return }
+    & dism.exe /English /Unmount-Image /MountDir:$Mount /Discard 2>$null | Out-Null
+    if (Test-Path $Mount) { Remove-Item $Mount -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory $Mount | Out-Null
+    & attrib.exe -r "$Win\sources\boot.wim"
+    Write-Host "mounting $Win\sources\boot.wim ..."
+    & dism.exe /English /Mount-Image /ImageFile:"$Win\sources\boot.wim" /Index:1 /MountDir:$Mount | Out-Null
+    if ($LASTEXITCODE) { throw "DISM could not mount $Win\sources\boot.wim (exit $LASTEXITCODE)" }
+}
+
+function Dismount-PE([bool]$Commit) {
+    if (-not $IsPE) { return }
+    $mode = if ($Commit) { '/Commit' } else { '/Discard' }
+    Write-Host "unmounting boot.wim ($mode) ..."
+    & dism.exe /English /Unmount-Image /MountDir:$Mount $mode | Out-Null
+    if ($LASTEXITCODE) { throw "DISM unmount failed (exit $LASTEXITCODE): run 'dism /Cleanup-Wim' and try again" }
+}
 
 $GoyaServices = [ordered]@{ goyasdhc = 0; goyapinmux = 3; goyagpio = 3; goyai2c = 3; goyatouch = 3; goyakeys = 3; mshidkmdf = 3 }
 $HiveName = 'GOYADIAG_SYSTEM'
 
 function With-SystemHive([scriptblock]$Body) {
     & reg.exe unload "HKLM\$HiveName" 2>$null | Out-Null
-    & reg.exe load "HKLM\$HiveName" "$Win\Windows\System32\config\SYSTEM" | Out-Null
+    & reg.exe load "HKLM\$HiveName" "$Root\Windows\System32\config\SYSTEM" | Out-Null
     if ($LASTEXITCODE) { throw "cannot load the SYSTEM hive of $Win (is Windows on the card still mounted elsewhere?)" }
     try {
         $sel = (Get-ItemProperty "HKLM:\$HiveName\Select").Current
@@ -41,6 +71,7 @@ function With-SystemHive([scriptblock]$Body) {
 }
 
 function Find-Bcd {
+    if (Test-Path "$Win\efi\microsoft\boot\BCD") { return @{ Bcd = "$Win\efi\microsoft\boot\BCD"; Added = $false } }
     $disk = (Get-Partition -DriveLetter $Win.TrimEnd(':')).DiskNumber
     foreach ($p in Get-Partition -DiskNumber $disk) {
         $isSys = ($p.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}') -or ($p.IsActive -and $p.Size -lt 1GB)
@@ -63,7 +94,14 @@ function Release-Bcd($b) {
     if ($b.Added) { Remove-PartitionAccessPath -DiskNumber $b.Disk -PartitionNumber $b.Part -AccessPath "$($b.Letter):\" }
 }
 
-switch ($Action.ToLower()) {
+$act = $Action.ToLower()
+if ($IsPE -and $act -in 'minidump', 'disable', 'enable') {
+    throw "'$Action' does not apply to a WinPE card (WinPE runs from RAM and installs no Goya services)"
+}
+if ($act -in $Changes -or $act -eq 'info') { Mount-PE }
+$ok = $false
+try {
+switch ($act) {
     'info' {
         With-SystemHive {
             param($cs)
@@ -80,6 +118,7 @@ switch ($Action.ToLower()) {
             $cc = Get-ItemProperty "$cs\Control\CrashControl" -ErrorAction SilentlyContinue
             Write-Host "CrashControl: CrashDumpEnabled=$($cc.CrashDumpEnabled) MinidumpDir=$($cc.MinidumpDir)"
         }
+        if ($IsPE) { Write-Host 'WinPE card: boot log and dumps stay in RAM (X:), see \goyape\diag.txt and \goyaosk.log on the card' }
         $log = "$Win\Windows\ntbtlog.txt"
         if (Test-Path $log) { Write-Host "--- last lines of ntbtlog.txt (last 'Loaded' = last driver that loaded):"; Get-Content $log -Encoding Unicode | Select-Object -Last 12 }
         else { Write-Host 'no ntbtlog.txt yet (run "bootlog on" and boot once)' }
@@ -91,7 +130,8 @@ switch ($Action.ToLower()) {
         New-Item -ItemType Directory $out | Out-Null
         foreach ($f in 'Windows\ntbtlog.txt', 'Windows\Panther\setupact.log', 'Windows\Panther\setuperr.log',
                        'Windows\Panther\UnattendGC\setupact.log', 'Windows\inf\setupapi.dev.log', 'Windows\inf\setupapi.offline.log',
-                       'goya\diag.txt', 'Windows\System32\LogFiles\Srt\SrtTrail.txt') {
+                       'goya\diag.txt', 'Windows\System32\LogFiles\Srt\SrtTrail.txt',
+                       'goyape\diag.txt', 'goyaosk.log') {
             if (Test-Path "$Win\$f") { Copy-Item "$Win\$f" (Join-Path $out ($f -replace '\\', '_')) }
         }
         if (Test-Path "$Win\Windows\Minidump") { Copy-Item "$Win\Windows\Minidump" (Join-Path $out 'Minidump') -Recurse }
@@ -157,4 +197,8 @@ switch ($Action.ToLower()) {
         }
     }
     default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on)" }
+}
+$ok = $true
+} finally {
+    if ($IsPE -and ($act -in $Changes -or $act -eq 'info')) { Dismount-PE ($ok -and ($act -in $Changes)) }
 }
