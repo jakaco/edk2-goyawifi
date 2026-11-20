@@ -14,6 +14,7 @@
  *
  * ACPI: \_SB.SDH1, HID MRVL0007, Memory32Fixed 0xD4280000/0x1000 [+ 0xD4282854/0x8], no interrupt.
  */
+#include <miniport.h>
 #include <storport.h>
 #include <string.h>
 
