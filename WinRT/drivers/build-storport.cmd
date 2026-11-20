@@ -14,11 +14,14 @@ set KL=%KITS%\Lib\10.0.19041.0\km\arm
 
 set DEFS=/DARM /D_ARM_ /DNDEBUG /D_WIN32_WINNT=0x0602 /DNTDDI_VERSION=0x06020000 /DWINNT=1
 set INC=/I%INCV% /I%INCV%\km /I%INCV%\km\crt /I%INCV%\shared
-cl /nologo /c /kernel /GS- /Oi /Zi /W3 /WX /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c || exit /b 1
+cl /nologo /c /kernel /GS- /Oi /Zi /W3 /WX /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c ..\common\goyamem.c || exit /b 1
 link /nologo /DRIVER /NODEFAULTLIB /SUBSYSTEM:NATIVE /ENTRY:DriverEntry /INTEGRITYCHECK /LIBPATH:%KL% ^
-     /OUT:%N%.sys %N%.obj storport.lib ntoskrnl.lib hal.lib BufferOverflowFastFailK.lib libcntpr.lib || exit /b 1
+     /OUT:%N%.sys %N%.obj goyamem.obj storport.lib ntoskrnl.lib hal.lib BufferOverflowFastFailK.lib libcntpr.lib || exit /b 1
 echo ---- imports (must only be storport.sys / ntoskrnl / hal) ----
 dumpbin /nologo /imports %N%.sys
+rem No NEON/VFP: the Windows 8 ARM kernel does not enable it for kernel-mode code
+dumpbin /nologo /disasm %N%.sys > %N%.dis
+findstr /r /c:" vld" /c:" vst" /c:" vmov" /c:" vdup" /c:" vmrs" /c:" vmsr" %N%.dis && (echo ERROR: %N%.sys contains VFP/NEON instructions & exit /b 1)
 echo built %N%.sys
 exit /b 0
 

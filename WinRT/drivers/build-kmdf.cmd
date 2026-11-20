@@ -39,7 +39,7 @@ for /d %%D in (%INCV%\km\spb\*) do set SPBINC=/I%%D
 if exist %INCV%\km\spb set SPBINC=%SPBINC% /I%INCV%\km\spb
 echo SPBINC=%SPBINC%
 set INC=/I%INCV% /I%INCV%\km /I%INCV%\km\crt /I%INCV%\shared /I%KM% %SPBINC%
-cl /nologo /c /kernel /GS- /Oi /Zi /W3 /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c || exit /b 1
+cl /nologo /c /kernel /GS- /Oi /Zi /W3 /wd4201 /wd4214 /wd4100 %DEFS% %INC% %N%.c ..\common\goyamem.c || exit /b 1
 
 set EXTRA=
 if exist %KITS%\Lib\10.0.19041.0\km\arm\msgpioclxstub.lib set EXTRA=%KITS%\Lib\10.0.19041.0\km\arm\msgpioclxstub.lib
@@ -47,7 +47,10 @@ if exist %KITS%\Lib\10.0.19041.0\km\arm\gpio\1.0\gpioclxstubs.lib set EXTRA=%KIT
 if exist %KITS%\Lib\10.0.19041.0\km\arm\spb\1.0\spbcxstubs.lib set EXTRA=%EXTRA% %KITS%\Lib\10.0.19041.0\km\arm\spb\1.0\spbcxstubs.lib
 echo extra libs: %EXTRA%
 link /nologo /DRIVER /NODEFAULTLIB /SUBSYSTEM:NATIVE /ENTRY:FxDriverEntry /INTEGRITYCHECK /LIBPATH:%KMLIB% /LIBPATH:%KITS%\Lib\10.0.19041.0\km\arm ^
-     /OUT:%N%.sys %N%.obj WdfDriverEntry.lib WdfLdr.lib ntoskrnl.lib hal.lib wmilib.lib BufferOverflowFastFailK.lib libcntpr.lib %EXTRA% || exit /b 1
+     /OUT:%N%.sys %N%.obj goyamem.obj WdfDriverEntry.lib WdfLdr.lib ntoskrnl.lib hal.lib wmilib.lib BufferOverflowFastFailK.lib libcntpr.lib %EXTRA% || exit /b 1
+rem No NEON/VFP: the Windows 8 ARM kernel does not enable it for kernel-mode code
+dumpbin /nologo /disasm %N%.sys > %N%.dis
+findstr /r /c:" vld" /c:" vst" /c:" vmov" /c:" vdup" /c:" vmrs" /c:" vmsr" %N%.dis && (echo ERROR: %N%.sys contains VFP/NEON instructions & exit /b 1)
 echo built %N%.sys ^(KMDF 1.%KMINOR%^)
 exit /b 0
 
