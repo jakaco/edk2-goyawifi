@@ -19,7 +19,11 @@ rem                          downloads any Windows files)
 rem    halext.dll           optional, default: HalExtMmpTimer.dll next to this script
 rem                         or in ..\drivers\ (the goyawifi kit layout)
 rem
-rem  It will: copy the media to C:\GoyaPE, add HalExtMmpTimer.dll and its
+rem  The media may also be full Windows RT install media: only efi\, boot\, bootmgr and
+rem  the plain WinPE image of sources\boot.wim (index 1, exported alone and made
+rem  bootable) are used - install.wim/install.esd and the setup files are never copied.
+rem
+rem  It will: copy those files to C:\GoyaPE, add HalExtMmpTimer.dll and its
 rem  OSExtensionDatabase entry to the offline SYSTEM hive, add every Goya driver
 rem  found in ..\drivers\ (kit layout) or next to this script (goyagpio, goyai2c,
 rem  goyatouch, goyakeys, goyapinmux, goyasdhc) with
@@ -49,12 +53,25 @@ if "%HALEXT%"=="" set HALEXT=%HERE%HalExtMmpTimer.dll
 if not exist "%HALEXT%" if exist "%HERE%..\drivers\HalExtMmpTimer.dll" set HALEXT=%HERE%..\drivers\HalExtMmpTimer.dll
 if not exist "%HALEXT%" (echo Missing HalExtMmpTimer.dll ^(build it: WinRT\HalExtMmpTimer, or the GitHub Actions artifact^). & exit /b 1)
 
-echo === 1/4 copying WinPE media to %WORK%
+echo === 1/4 copying only the WinPE boot files to %WORK%
 dism /Unmount-Image /MountDir:"%MNT%" /Discard >nul 2>&1
 reg unload HKLM\%HIVE% >nul 2>&1
 if exist "%WORK%" rmdir /s /q "%WORK%"
-robocopy "%MEDIA%" "%WORK%" /E /NFL /NDL /NJH /NP >nul
-if errorlevel 8 (echo copy failed & exit /b 1)
+mkdir "%WORK%\sources" || exit /b 1
+rem efi\ + boot\ (+ bootmgr) only: no install.wim / install.esd / setup files / support\
+robocopy "%MEDIA%\efi" "%WORK%\efi" /E /NFL /NDL /NJH /NP >nul
+if errorlevel 8 (echo copy of efi\ failed & exit /b 1)
+robocopy "%MEDIA%\boot" "%WORK%\boot" /E /NFL /NDL /NJH /NP >nul
+if errorlevel 8 (echo copy of boot\ failed & exit /b 1)
+for %%F in (bootmgr bootmgr.efi) do if exist "%MEDIA%\%%F" copy /y "%MEDIA%\%%F" "%WORK%\" >nul
+rem install media: boot.wim = 1 "Windows PE" + 2 "Windows Setup" (the bootable one). Export the
+rem plain WinPE image alone and mark it bootable, so the image we modify is the one that boots.
+rem Other index: set GOYA_PE_INDEX=n before running this script.
+set PEIDX=1
+if defined GOYA_PE_INDEX set PEIDX=%GOYA_PE_INDEX%
+dism /English /Get-ImageInfo /ImageFile:"%MEDIA%\sources\boot.wim" | findstr /i /c:"Index" /c:"Name"
+echo   using boot.wim index %PEIDX%
+dism /Export-Image /SourceImageFile:"%MEDIA%\sources\boot.wim" /SourceIndex:%PEIDX% /DestinationImageFile:"%WORK%\sources\boot.wim" /Bootable || exit /b 1
 attrib -r "%WORK%\sources\boot.wim" >nul 2>&1
 
 echo === 2/4 boot.wim: HAL extension, drivers, autorun
@@ -113,6 +130,7 @@ call "%HERE%bcd.cmd" goya "%WORK%" || exit /b 1
 echo === 4/4 copying to %SD%\
 robocopy "%WORK%" %SD%\ /E /NFL /NDL /NJH /NP
 if errorlevel 8 (echo copy to card failed & exit /b 1)
+for %%F in (install.wim install.esd install.swm) do if exist %SD%\sources\%%F echo NOTE: %SD%\sources\%%F is left over from an earlier copy and is not needed for WinPE - you can delete it.
 if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL /NDL /NJH /NP >nul
 echo.
 echo Done. Card in the tablet, then boot the EDK2 firmware: goyawifi-uefi-winrt-release.img
