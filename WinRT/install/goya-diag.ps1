@@ -32,41 +32,51 @@ if (Test-Path "$Win\Windows\System32\config\SYSTEM") {
 } else {
     throw "$Win holds neither a Windows installation (\Windows) nor a WinPE card (\sources\boot.wim)"
 }
+# Native tools through cmd.exe with their own redirection: Windows PowerShell 5.1 turns any stderr
+# output of a native program into a terminating error under ErrorActionPreference=Stop, even for
+# expected failures (e.g. unloading a hive that is not loaded). Success is judged by the exit code.
+function Run([string]$CmdLine, [switch]$Show) {
+    if ($Show) { $out = cmd.exe /c "$CmdLine 2>&1"; $out | ForEach-Object { Write-Host $_ } }
+    else { $out = cmd.exe /c "$CmdLine 2>&1" }
+    $script:RunOutput = $out
+    return $LASTEXITCODE
+}
+
 $Changes = @('verifier-off', 'minidump', 'disable', 'enable', 'halext')
 
 function Mount-PE {
     if (-not $IsPE) { return }
-    & dism.exe /English /Unmount-Image /MountDir:$Mount /Discard 2>$null | Out-Null
+    [void](Run "dism.exe /English /Unmount-Image /MountDir:""$Mount"" /Discard")
     if (Test-Path $Mount) { Remove-Item $Mount -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory $Mount | Out-Null
-    & attrib.exe -r "$Win\sources\boot.wim"
+    [void](Run "attrib.exe -r ""$Win\sources\boot.wim""")
     Write-Host "mounting $Win\sources\boot.wim ..."
-    & dism.exe /English /Mount-Image /ImageFile:"$Win\sources\boot.wim" /Index:1 /MountDir:$Mount | Out-Null
-    if ($LASTEXITCODE) { throw "DISM could not mount $Win\sources\boot.wim (exit $LASTEXITCODE)" }
+    $rc = Run "dism.exe /English /Mount-Image /ImageFile:""$Win\sources\boot.wim"" /Index:1 /MountDir:""$Mount"""
+    if ($rc) { $script:RunOutput | Select-Object -Last 5 | ForEach-Object { Write-Host $_ }; throw "DISM could not mount $Win\sources\boot.wim (exit $rc)" }
 }
 
 function Dismount-PE([bool]$Commit) {
     if (-not $IsPE) { return }
     $mode = if ($Commit) { '/Commit' } else { '/Discard' }
     Write-Host "unmounting boot.wim ($mode) ..."
-    & dism.exe /English /Unmount-Image /MountDir:$Mount $mode | Out-Null
-    if ($LASTEXITCODE) { throw "DISM unmount failed (exit $LASTEXITCODE): run 'dism /Cleanup-Wim' and try again" }
+    $rc = Run "dism.exe /English /Unmount-Image /MountDir:""$Mount"" $mode"
+    if ($rc) { $script:RunOutput | Select-Object -Last 5 | ForEach-Object { Write-Host $_ }; throw "DISM unmount failed (exit $LASTEXITCODE): run 'dism /Cleanup-Wim' and try again" }
 }
 
 $GoyaServices = [ordered]@{ goyasdhc = 0; goyapinmux = 3; goyagpio = 3; goyai2c = 3; goyatouch = 3; goyakeys = 3; mshidkmdf = 3 }
 $HiveName = 'GOYADIAG_SYSTEM'
 
 function With-SystemHive([scriptblock]$Body) {
-    & reg.exe unload "HKLM\$HiveName" 2>$null | Out-Null
-    & reg.exe load "HKLM\$HiveName" "$Root\Windows\System32\config\SYSTEM" | Out-Null
-    if ($LASTEXITCODE) { throw "cannot load the SYSTEM hive of $Win (is Windows on the card still mounted elsewhere?)" }
+    [void](Run "reg.exe unload HKLM\$HiveName")
+    $rc = Run "reg.exe load HKLM\$HiveName ""$Root\Windows\System32\config\SYSTEM"""
+    if ($rc) { $script:RunOutput | ForEach-Object { Write-Host $_ }; throw "cannot load the SYSTEM hive of $Win (is Windows on the card still mounted elsewhere?)" }
     try {
         $sel = (Get-ItemProperty "HKLM:\$HiveName\Select").Current
         $cs = "HKLM:\$HiveName\ControlSet{0:d3}" -f $sel
         & $Body $cs
     } finally {
         [gc]::Collect(); [gc]::WaitForPendingFinalizers()
-        & reg.exe unload "HKLM\$HiveName" | Out-Null
+        if (Run "reg.exe unload HKLM\$HiveName") { Start-Sleep 2; [gc]::Collect(); [void](Run "reg.exe unload HKLM\$HiveName") }
     }
 }
 
@@ -149,8 +159,9 @@ switch ($act) {
     'bootlog' {
         $b = Find-Bcd
         try {
-            if ($Arg -eq 'off') { & bcdedit.exe /store $b.Bcd /deletevalue '{default}' bootlog } else { & bcdedit.exe /store $b.Bcd /set '{default}' bootlog yes }
-            & bcdedit.exe /store $b.Bcd /enum '{default}'
+            if ($Arg -eq 'off') { [void](Run "bcdedit.exe /store ""$($b.Bcd)"" /deletevalue {default} bootlog" -Show) }
+            else { [void](Run "bcdedit.exe /store ""$($b.Bcd)"" /set {default} bootlog yes" -Show) }
+            [void](Run "bcdedit.exe /store ""$($b.Bcd)"" /enum {default}" -Show)
         } finally { Release-Bcd $b }
     }
     'minidump' {
