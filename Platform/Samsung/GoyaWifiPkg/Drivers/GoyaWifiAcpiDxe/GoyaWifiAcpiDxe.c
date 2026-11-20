@@ -197,8 +197,11 @@ BuildTables (
   mCsrt.Group.SharedInfoLength = 0;
   for (I = 0; I < 2; I++) {
     mCsrt.Timer[I].Header.Length  = sizeof (CSRT_TIMER_DESC);
-    mCsrt.Timer[I].Header.Type    = 2;       // CSRT_RD_TYPE_TIMER (from spec memory, verify)
-    mCsrt.Timer[I].Header.Subtype = 1;       // CSRT_RD_SUBTYPE_TIMER (verify)
+    // CSRT_RD_TYPE_TIMER = 2, CSRT_RD_SUBTYPE_TIMER = 0. The 8520 HAL dispatches descriptors on
+    // (Subtype << 16 | Type) and only passes 0x00000002 to the timer code: with subtype 1 both timers
+    // were dropped and the HAL stopped with 0x5C (0x110, problem 0x14 = no clock timer).
+    mCsrt.Timer[I].Header.Type    = 2;
+    mCsrt.Timer[I].Header.Subtype = 0;
     mCsrt.Timer[I].Header.Uid     = (UINT32)I;
     mCsrt.Timer[I].TimerType      = (UINT32)(I + 1);   // 1 = MMP event (counter 0), 2 = MMP counter (counter 1)
     mCsrt.Timer[I].ClockSource    = 3;       // FNCLKSEL 3 (3.25 MHz)
