@@ -51,15 +51,45 @@ Pxa988L2Disable (
   ArmDataSynchronizationBarrier ();
 }
 
+//
+// Cortex-A9 ACTLR: SMP (take part in coherency) and FW (broadcast cache/TLB maintenance).
+// Linux sets both itself before turning the MMU on (__v7_ca9mp_setup); Windows does not and
+// maps its memory Shareable, which a Cortex-A9 with SMP=0 treats as non-cacheable and outside
+// coherency. Set them here, before caches/MMU, writing only when they are not set already
+// (the same write the vendor Linux kernel performs in this CPU mode).
+//
+#define A9_ACTLR_FW   BIT0
+#define A9_ACTLR_SMP  BIT6
+
+STATIC
+UINT32
+Pxa988EnableSmpMode (
+  VOID
+  )
+{
+  UINT32  Actlr;
+
+  Actlr = (UINT32)ArmReadAuxCr ();
+  if ((Actlr & (A9_ACTLR_SMP | A9_ACTLR_FW)) != (A9_ACTLR_SMP | A9_ACTLR_FW)) {
+    ArmWriteAuxCr (Actlr | A9_ACTLR_SMP | A9_ACTLR_FW);
+    ArmInstructionSynchronizationBarrier ();
+  }
+
+  return Actlr;
+}
+
 RETURN_STATUS
 ArmPlatformInitialize (
   IN  UINTN  MpId
   )
 {
+  UINT32  ActlrBefore;
+
   if ((MpId & 0xFF) != 0) {
     return RETURN_SUCCESS;
   }
 
+  ActlrBefore = Pxa988EnableSmpMode ();
   Pxa988L2Disable ();
 
   //
@@ -80,6 +110,7 @@ ArmPlatformInitialize (
 
   SerialPortInitialize ();
   DEBUG ((DEBUG_ERROR, "\ngoyawifi UEFI (PXA986) - SEC, built " __DATE__ " " __TIME__ "\n"));
+  DEBUG ((DEBUG_ERROR, "ACTLR 0x%08x -> 0x%08x (SMP/FW)\n", ActlrBefore, (UINT32)ArmReadAuxCr ()));
 
   return RETURN_SUCCESS;
 }

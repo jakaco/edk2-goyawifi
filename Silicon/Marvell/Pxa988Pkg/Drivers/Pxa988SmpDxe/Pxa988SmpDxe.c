@@ -223,11 +223,17 @@ Pxa988SmpInitialize (
   UINT32                Beat0;
   UINT32                Beat1;
 
+  gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, PublishReport, NULL, &gEfiEndOfDxeEventGroupGuid, &mEndOfDxeEvent);
+
+  // What the OS will inherit (set in Pxa988PlatformLib before the MMU is enabled)
+  Log ("ACTLR=0x%08x (SMP %a, FW %a)\n",
+    (UINT32)ArmReadAuxCr (),
+    (ArmReadAuxCr () & BIT6) ? "on" : "OFF",
+    (ArmReadAuxCr () & BIT0) ? "on" : "OFF");
+
   if (!FixedPcdGetBool (PcdSecondaryCpuBringup)) {
     return EFI_SUCCESS;
   }
-
-  gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, PublishReport, NULL, &gEfiEndOfDxeEventGroupGuid, &mEndOfDxeEvent);
 
   StubSize = (UINTN)(Pxa988Cpu1StubEnd - Pxa988Cpu1StubStart);
   ASSERT (StubSize == MB_OFFSET + 0x80);
