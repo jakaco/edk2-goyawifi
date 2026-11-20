@@ -13,7 +13,7 @@ typedef void VOID;
 #define STATUS_INSUFFICIENT_RESOURCES ((NTSTATUS)0xC000009A)
 #define STATUS_CONFLICTING_ADDRESSES ((NTSTATUS)0xC0000018)
 typedef union { struct { unsigned long LowPart; long HighPart; }; long long QuadPart; } PHYSICAL_ADDRESS;
-typedef enum { MmNonCached } MEMORY_CACHING_TYPE;
+typedef enum { MmNonCached, MmCached, MmWriteCombined } MEMORY_CACHING_TYPE;
 typedef enum { TimerModePeriodic, TimerModeOneShot } TIMER_MODE;
 typedef enum { TimerUnknown } TIMER_KNOWN_TYPE;
 typedef enum { LevelSensitive } INTERRUPT_MODE;
@@ -40,3 +40,4 @@ PCSRT_RESOURCE_DESCRIPTOR_HEADER GetNextResourceDescriptor(ULONG, PCSRT_RESOURCE
 #define WRITE_REGISTER_NOFENCE_ULONG(p,v) (*(volatile ULONG*)(p)=(v))
 void *RtlZeroMemory_(void*, unsigned long);
 #define RtlZeroMemory(d,l) __builtin_memset(d,0,l)
+#define UNREFERENCED_PARAMETER(P) ((void)(P))

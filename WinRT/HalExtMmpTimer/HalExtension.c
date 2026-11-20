@@ -53,6 +53,90 @@ static FORCEINLINE VOID WriteReg(PVOID Base, ULONG Reg, ULONG Value)
 }
 
 //
+// ---- On-screen progress markers (debug aid, GOYA_HALEXT_MARKERS) --------------------------------
+//
+// Coloured 32x32 squares in the top-left corner of the boot framebuffer (the firmware's GOP buffer at
+// 0x17000000, 1024x600, 4096 bytes per line, BGRA), so that a phone video of the boot shows how far
+// the timer side gets before a crash. Slots (left to right):
+//   0 AddResourceGroup called (white)     1 event timer registration (green ok / red failed /
+//   2 counter registration (green/red)       yellow: CSRT descriptor length mismatch)
+//   3 event Initialize called (blue)      4 counter Initialize called (blue)
+//   5 ArmTimer: yellow periodic, cyan one-shot, red rejected     6 Stop called (orange)
+//   7 flips magenta/green on every timer interrupt
+//   8-15 interrupt count / 8 in binary (white = 1), most significant bit first
+//   16 QueryCounter used (blue), flips to purple every 4096 calls
+//
+#ifndef GOYA_HALEXT_MARKERS
+#define GOYA_HALEXT_MARKERS 1
+#endif
+
+#define FB_PHYS     0x17000000ULL
+#define FB_PITCH    4096
+#define FB_ROWS     48
+
+#define C_WHITE   0x00FFFFFF
+#define C_GREEN   0x0000E000
+#define C_RED     0x00FF0000
+#define C_YELLOW  0x00FFFF00
+#define C_BLUE    0x000060FF
+#define C_CYAN    0x0000FFFF
+#define C_ORANGE  0x00FF8000
+#define C_MAGENTA 0x00FF00FF
+#define C_PURPLE  0x008000FF
+#define C_DARK    0x00303030
+
+static volatile ULONG *gFb;
+static ULONG gIrqCount;
+static ULONG gQueryCount;
+
+static VOID Mark(ULONG Slot, ULONG Color)
+{
+#if GOYA_HALEXT_MARKERS
+    ULONG X, Y;
+    volatile ULONG *Row;
+
+    if (gFb == NULL || Slot > 23) {
+        return;
+    }
+    for (Y = 8; Y < 40; Y++) {
+        Row = (volatile ULONG *)((volatile UCHAR *)gFb + Y * FB_PITCH) + 8 + Slot * 40;
+        for (X = 0; X < 32; X++) {
+            Row[X] = Color;
+        }
+    }
+#else
+    UNREFERENCED_PARAMETER(Slot);
+    UNREFERENCED_PARAMETER(Color);
+#endif
+}
+
+static VOID MarkMap(VOID)
+{
+#if GOYA_HALEXT_MARKERS
+    PHYSICAL_ADDRESS Fb;
+
+    if (gFb == NULL) {
+        Fb.QuadPart = FB_PHYS;
+        gFb = (volatile ULONG *)HalMapIoSpace(Fb, FB_ROWS * FB_PITCH, MmWriteCombined);
+    }
+#endif
+}
+
+static VOID MarkIrq(VOID)
+{
+    ULONG I, V;
+
+    gIrqCount++;
+    Mark(7, (gIrqCount & 1) ? C_MAGENTA : C_GREEN);
+    if ((gIrqCount & 7) == 0) {
+        V = gIrqCount >> 3;
+        for (I = 0; I < 8; I++) {
+            Mark(8 + I, (V & (0x80UL >> I)) ? C_WHITE : C_DARK);
+        }
+    }
+}
+
+//
 // ---- Counter 1: free-running readable counter -------------------------------
 //
 
@@ -61,6 +145,8 @@ static NTSTATUS HalpMmpCounterInitialize(__in PVOID TimerDataPtr)
     PMMP_TIMER_INTERNAL_DATA T = (PMMP_TIMER_INTERNAL_DATA)TimerDataPtr;
     PULONG Base = T->BaseAddressPtr;
     ULONG Cer = ReadReg(Base, MMP_TMR_CER);
+
+    Mark(4, C_BLUE);
 
     //
     // Same sequence as the firmware's MmpTimerLib and the vendor kernel
@@ -81,6 +167,10 @@ static ULONGLONG HalpMmpCounterQuery(__in PVOID TimerDataPtr)
     PMMP_TIMER_INTERNAL_DATA T = (PMMP_TIMER_INTERNAL_DATA)TimerDataPtr;
     ULONG Value = 0;
     ULONG I;
+
+    if ((gQueryCount++ & 0xFFF) == 0) {
+        Mark(16, (gQueryCount & 0x1000) ? C_PURPLE : C_BLUE);
+    }
 
     //
     // The counter cannot be read directly: request a latch, then read the
@@ -103,6 +193,8 @@ static NTSTATUS HalpMmpEventInitialize(__in PVOID TimerDataPtr)
 {
     PMMP_TIMER_INTERNAL_DATA T = (PMMP_TIMER_INTERNAL_DATA)TimerDataPtr;
     PULONG Base = T->BaseAddressPtr;
+
+    Mark(3, C_BLUE);
 
     WriteReg(Base, MMP_TMR_CER, ReadReg(Base, MMP_TMR_CER) & ~(1UL << MMP_EVENT_COUNTER));
     WriteReg(Base, MMP_TMR_CCR, ReadReg(Base, MMP_TMR_CCR) & ~(3UL << 0));   // counter 0: fast clock
@@ -133,17 +225,21 @@ static NTSTATUS HalpMmpEventArm(__in PVOID TimerDataPtr, __in TIMER_MODE Mode, _
     PMMP_TIMER_INTERNAL_DATA T = (PMMP_TIMER_INTERNAL_DATA)TimerDataPtr;
 
     if (TickCount == 0 || TickCount >= MMP_RESET_MAX_TICKS) {
+        Mark(5, C_RED);
         return STATUS_INVALID_PARAMETER;
     }
 
     switch (Mode) {
     case TimerModePeriodic:
         T->PeriodInTicks = (ULONG)TickCount;   // re-armed in AcknowledgeInterrupt
+        Mark(5, C_YELLOW);
         break;
     case TimerModeOneShot:
         T->PeriodInTicks = 0;
+        Mark(5, C_CYAN);
         break;
     default:
+        Mark(5, C_RED);
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -157,6 +253,7 @@ static VOID HalpMmpEventAcknowledge(__in PVOID TimerDataPtr)
 
     WriteReg(T->BaseAddressPtr, MMP_TMR_ICR(MMP_EVENT_COUNTER), 0x1);
     HalpMmpEventStopCounter(T->BaseAddressPtr);        // as the vendor kernel: stop after each match
+    MarkIrq();
 
     if (T->PeriodInTicks != 0) {
         HalpMmpEventProgram(T->BaseAddressPtr, T->PeriodInTicks);
@@ -167,6 +264,7 @@ static VOID HalpMmpEventStop(__in PVOID TimerDataPtr)
 {
     PMMP_TIMER_INTERNAL_DATA T = (PMMP_TIMER_INTERNAL_DATA)TimerDataPtr;
 
+    Mark(6, C_ORANGE);
     WriteReg(T->BaseAddressPtr, MMP_TMR_IER(MMP_EVENT_COUNTER), 0);
     HalpMmpEventStopCounter(T->BaseAddressPtr);
     WriteReg(T->BaseAddressPtr, MMP_TMR_ICR(MMP_EVENT_COUNTER), 0x1);
@@ -239,7 +337,9 @@ HalpMmpTimerRegister(
         NewTimer.Capabilities = TIMER_COUNTER_READABLE;
     }
 
-    return RegisterResourceDescriptor(Handle, ResourceGroup, &Csrt->Header, &NewTimer);
+    Status = RegisterResourceDescriptor(Handle, ResourceGroup, &Csrt->Header, &NewTimer);
+    Mark(IsEvent ? 1 : 2, NT_SUCCESS(Status) ? C_GREEN : C_RED);
+    return Status;
 }
 
 NTSTATUS
@@ -252,6 +352,9 @@ AddResourceGroup (
     PCSRT_RESOURCE_DESCRIPTOR_TIMER_INSTANCE Timer;
     NTSTATUS Status;
 
+    MarkMap();
+    Mark(0, C_WHITE);
+
     for (;;) {
         Header = GetNextResourceDescriptor(Handle, ResourceGroup, Header,
                                            CSRT_RD_TYPE_TIMER,
@@ -262,6 +365,7 @@ AddResourceGroup (
         }
 
         if (Header->Length != sizeof(CSRT_RESOURCE_DESCRIPTOR_TIMER_INSTANCE)) {
+            Mark(1, C_YELLOW);
             return STATUS_INVALID_PARAMETER;
         }
 
