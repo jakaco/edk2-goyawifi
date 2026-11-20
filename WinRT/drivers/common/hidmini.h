@@ -137,10 +137,25 @@ static VOID HidMiniIoInternal(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen,
         if (NT_SUCCESS(st)) { HidMiniDeliver(device); return; }
         break;
     case IOCTL_HID_GET_FEATURE: {
-        PHID_XFER_PACKET p = (PHID_XFER_PACKET)WdfRequestWdmGetIrp(Request)->UserBuffer;
+        /* mshidkmdf does NOT pass a HID_XFER_PACKET: it converts it into an input buffer holding the
+           report ID and an output buffer for the report (as in the WDK vhidmini2 sample). Reading
+           Irp->UserBuffer as a HID_XFER_PACKET took report bytes as a pointer and wrote through it. */
+        WDFMEMORY inMem, outMem;
+        size_t inLen = 0, outLen = 0;
+        PUCHAR inBuf, outBuf;
         ULONG written = 0;
-        if (p == NULL || c->Cfg.GetFeature == NULL) { st = STATUS_NOT_SUPPORTED; break; }
-        st = c->Cfg.GetFeature(c->Cfg.Ctx, p->reportId, p->reportBuffer, p->reportBufferLen, &written);
+        if (c->Cfg.GetFeature == NULL) { st = STATUS_NOT_SUPPORTED; break; }
+        st = WdfRequestRetrieveInputMemory(Request, &inMem);
+        if (!NT_SUCCESS(st)) break;
+        st = WdfRequestRetrieveOutputMemory(Request, &outMem);
+        if (!NT_SUCCESS(st)) break;
+        inBuf = (PUCHAR)WdfMemoryGetBuffer(inMem, &inLen);
+        outBuf = (PUCHAR)WdfMemoryGetBuffer(outMem, &outLen);
+        if (inBuf == NULL || inLen < 1 || outBuf == NULL || outLen == 0 || outLen > MAXULONG) {
+            st = STATUS_INVALID_BUFFER_SIZE;
+            break;
+        }
+        st = c->Cfg.GetFeature(c->Cfg.Ctx, inBuf[0], outBuf, (ULONG)outLen, &written);
         if (NT_SUCCESS(st)) info = written;
         break;
     }
