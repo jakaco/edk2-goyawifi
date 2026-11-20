@@ -84,6 +84,7 @@ ArmPlatformInitialize (
   )
 {
   UINT32  ActlrBefore;
+  UINT32  TraceBefore;
 
   if ((MpId & 0xFF) != 0) {
     return RETURN_SUCCESS;
@@ -91,6 +92,14 @@ ArmPlatformInitialize (
 
   ActlrBefore = Pxa988EnableSmpMode ();
   Pxa988L2Disable ();
+
+  //
+  // Clock the CPU debug logic. Windows' kernel programs the CP14 debug registers
+  // (OS Lock, DBGDSCRext, breakpoints) at start-up; with the clock gated those
+  // instructions are UNDEFINED and Windows stops with 0xC4/0x91.
+  //
+  TraceBefore = MmioRead32 (APMU_TRACE);
+  MmioOr32 (APMU_TRACE, APMU_TRACE_DBGCLK_EN);
 
   //
   // Peripheral IRQs go straight to the GIC SPIs; the legacy ICU must not
@@ -111,6 +120,7 @@ ArmPlatformInitialize (
   SerialPortInitialize ();
   DEBUG ((DEBUG_ERROR, "\ngoyawifi UEFI (PXA986) - SEC, built " __DATE__ " " __TIME__ "\n"));
   DEBUG ((DEBUG_ERROR, "ACTLR 0x%08x -> 0x%08x (SMP/FW)\n", ActlrBefore, (UINT32)ArmReadAuxCr ()));
+  DEBUG ((DEBUG_ERROR, "APMU_TRACE 0x%08x -> 0x%08x (debug clock)\n", TraceBefore, MmioRead32 (APMU_TRACE)));
 
   return RETURN_SUCCESS;
 }

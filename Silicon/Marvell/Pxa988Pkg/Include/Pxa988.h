@@ -38,6 +38,14 @@
 #define APMU_SDH1                   (PXA988_APMU_BASE + 0x0058)
 #define APMU_USB                    (PXA988_APMU_BASE + 0x005C)
 #define APMU_SDH2                   (PXA988_APMU_BASE + 0x00E0)
+// Debug/trace clocks of the Cortex-A9 CoreSight logic (Linux clock-pxa988.c "DBGCLK"/"TRACECLK").
+// With DBGCLK off, the extended CP14 debug registers are UNDEFINED, and Windows' kernel touches
+// them during start-up.
+#define APMU_TRACE                  (PXA988_APMU_BASE + 0x0108)
+#define APMU_TRACE_DBGCLK_EN        (1U << 3)
+#define APMU_TRACE_TRACECLK_EN      (1U << 4)
+// Memory-mapped debug registers of core 0 (DBGDRAR + DBGDSAR = 0xD4100000 + 0x10000)
+#define PXA988_CORE0_DEBUG_BASE     0xD4110000
 #define   SDH_CLK_RST_N             BIT0
 #define   SDH_CLK_AXI_RST_N         BIT1
 #define   SDH_CLK_ACLK_EN           BIT3

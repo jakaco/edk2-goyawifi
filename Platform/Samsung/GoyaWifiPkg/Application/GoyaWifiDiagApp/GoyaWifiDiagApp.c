@@ -313,7 +313,16 @@ ShowCpuDebug (
     goto Done;
   }
 
-  Print (L"Debug (what Windows does at start-up):\n ");
+  V = MmioRead32 (APMU_TRACE);
+  Print (L"Debug (what Windows does at start-up): APMU_TRACE=%08x (debug clock %s)", V, (V & APMU_TRACE_DBGCLK_EN) ? L"on" : L"OFF");
+  if (V & APMU_TRACE_DBGCLK_EN) {
+    // Memory-mapped view (only safe with the clock on): AUTHSTATUS shows DBGEN/NIDEN/SPIDEN/SPNIDEN
+    Print (L"\n  mmio: DIDR=%08x OSLSR=%08x PRSR=%08x AUTH=%08x LSR=%08x",
+           MmioRead32 (PXA988_CORE0_DEBUG_BASE + 0x000), MmioRead32 (PXA988_CORE0_DEBUG_BASE + 0x304),
+           MmioRead32 (PXA988_CORE0_DEBUG_BASE + 0x314), MmioRead32 (PXA988_CORE0_DEBUG_BASE + 0xFB8),
+           MmioRead32 (PXA988_CORE0_DEBUG_BASE + 0xFB4));
+  }
+  Print (L"\n ");
   DbgShow (L"ID_DFR0", GoyaDbgIdDfr0, 0, FALSE, NULL);
   DbgShow (L"DIDR", GoyaDbgDidr, 0, FALSE, NULL);
   DbgShow (L"DRAR", GoyaDbgDrar, 0, FALSE, NULL);
