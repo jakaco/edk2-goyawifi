@@ -368,6 +368,14 @@ static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     WDF_OBJECT_ATTRIBUTES targetAttrs;
     UNREFERENCED_PARAMETER(Driver);
 
+    /* SpbCx bound? (table filled by the class-extension binding; never call through NULL) */
+    if (SpbFunctions[SpbDeviceInitConfigTableIndex] == NULL || SpbFunctions[SpbDeviceInitializeTableIndex] == NULL ||
+        SpbFunctions[SpbControllerSetTargetAttributesTableIndex] == NULL ||
+        SpbFunctions[SpbTargetGetConnectionParametersTableIndex] == NULL ||
+        SpbFunctions[SpbRequestGetTransferParametersTableIndex] == NULL ||
+        SpbFunctions[SpbRequestCompleteTableIndex] == NULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
     status = SpbDeviceInitConfig(Init);
     if (!NT_SUCCESS(status)) return status;
 

@@ -308,6 +308,10 @@ static NTSTATUS GoyaEvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     WDF_OBJECT_ATTRIBUTES attrs;
     WDFDEVICE device;
 
+    if (GpioClxExportedInterfaces[AddDevicePreDeviceCreateIndex] == NULL ||
+        GpioClxExportedInterfaces[AddDevicePostDeviceCreateIndex] == NULL) {
+        return STATUS_NOT_SUPPORTED;            /* GpioClx not bound: fail, never call through NULL */
+    }
     status = GPIO_CLX_ProcessAddDevicePreDeviceCreate(Driver, Init, &attrs);
     if (!NT_SUCCESS(status)) return status;
     status = WdfDeviceCreate(&Init, &attrs, &device);
@@ -327,10 +331,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     status = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &cfg, &driver);
     if (!NT_SUCCESS(status)) return status;
 
-    /* fields are assigned by name so the same source builds against the 8.0 and 10 gpioclx.h */
+    if (GpioClxExportedInterfaces[RegisterClientIndex] == NULL) {
+        return STATUS_NOT_SUPPORTED;            /* GpioClx not bound */
+    }
+
+    /* fields are assigned by name so the same source builds against the 8.0 and 10 gpioclx.h.
+       Register as a version 1 client (Windows 8.0 GpioClx): the 19041 header's GPIO_CLIENT_VERSION is 4
+       and its packet carries the 8.1/10 callbacks after CLIENT_ReconfigureInterrupt, which the 8.0 class
+       extension does not know. */
     RtlZeroMemory(&pkt, sizeof(pkt));
-    pkt.Version = GPIO_CLIENT_VERSION;
-    pkt.Size = sizeof(pkt);
+    pkt.Version = 1;
+    pkt.Size = (USHORT)FIELD_OFFSET(GPIO_CLIENT_REGISTRATION_PACKET, CLIENT_QueryEnabledInterrupts);
     pkt.ControllerContextSize = sizeof(GOYA_GPIO);
     pkt.CLIENT_PrepareController = GoyaPrepareController;
     pkt.CLIENT_ReleaseController = GoyaReleaseController;

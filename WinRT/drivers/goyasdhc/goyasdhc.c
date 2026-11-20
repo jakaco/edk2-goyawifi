@@ -227,10 +227,25 @@ static VOID SetSense(PSCSI_REQUEST_BLOCK Srb, PGOYA_EXT X, UCHAR Key, UCHAR Asc,
     }
 }
 
-static VOID ReturnData(PSCSI_REQUEST_BLOCK Srb, const VOID *Data, ULONG Len)
+/* System address of the request's data buffer. Srb->DataBuffer is only a mapped system address for
+   READ/WRITE when Storport honours STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE (Windows 8 final); the
+   8520 build may hand over the caller's original address instead, which is not valid in the thread
+   StartIo runs in. StorPortGetSystemAddress maps the request's MDL in every Storport version. */
+static PUCHAR SrbData(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
 {
+    PVOID va = NULL;
+    if (!Srb->DataBuffer || !Srb->DataTransferLength) return NULL;
+    if (StorPortGetSystemAddress(X, Srb, &va) == STOR_STATUS_SUCCESS && va) return (PUCHAR)va;
+    return NULL;
+}
+
+static VOID ReturnData(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, const VOID *Data, ULONG Len)
+{
+    PUCHAR buf;
     if (Len > Srb->DataTransferLength) Len = Srb->DataTransferLength;
-    if (Len && Srb->DataBuffer) RtlCopyMemory(Srb->DataBuffer, Data, Len);
+    buf = Len ? SrbData(X, Srb) : NULL;
+    if (Len && !buf) { Srb->DataTransferLength = 0; Srb->SrbStatus = SRB_STATUS_ERROR; return; }
+    if (Len) RtlCopyMemory(buf, Data, Len);
     Srb->DataTransferLength = Len;
     Srb->SrbStatus = SRB_STATUS_SUCCESS;
 }
@@ -250,6 +265,7 @@ static VOID DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
     ULONGLONG lba;
     ULONG n, done;
     SD_STATUS st;
+    PUCHAR data = NULL;
 
     switch (cdb[0]) {
     case OP_READ6: case OP_WRITE6:
@@ -266,14 +282,14 @@ static VOID DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
     if (n == 0) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return; }
     if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); return; }
     if (lba + n > X->Sd.Blocks) { SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x21, 0); return; }
-    if ((ULONGLONG)n * SD_BLOCK > Srb->DataTransferLength || !Srb->DataBuffer) {
+    if ((ULONGLONG)n * SD_BLOCK > Srb->DataTransferLength || (data = SrbData(X, Srb)) == NULL) {
         SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x24, 0); return;
     }
 
     done = 0;
     while (n) {
         ULONG chunk = n > MAX_XFER_BLOCKS ? MAX_XFER_BLOCKS : n;
-        PUCHAR p = (PUCHAR)Srb->DataBuffer + done * SD_BLOCK;
+        PUCHAR p = data + done * SD_BLOCK;
         st = SdTransfer(&X->Sd, (BOOLEAN)!Write, lba, chunk, p);
         done += chunk;
         if (st != SD_OK) {
@@ -294,12 +310,12 @@ static VOID DoInquiry(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
         switch (Srb->Cdb[2]) {
         case 0x00:
             d[1] = 0x00; d[3] = 2; d[4] = 0x00; d[5] = 0x80;
-            ReturnData(Srb, d, 6); return;
+            ReturnData(X, Srb, d, 6); return;
         case 0x80: {                             /* unit serial = CID product serial number */
             ULONG psn = SdCsdBits(X->Sd.Cid, 24, 32), i;
             d[1] = 0x80; d[3] = 8;
             for (i = 0; i < 8; i++) d[4 + i] = "0123456789ABCDEF"[(psn >> (28 - 4 * i)) & 0xF];
-            ReturnData(Srb, d, 12); return;
+            ReturnData(X, Srb, d, 12); return;
         }
         default:
             SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x24, 0); return;
@@ -311,7 +327,7 @@ static VOID DoInquiry(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
     RtlCopyMemory(d + 8,  "GOYA    ", 8);
     RtlCopyMemory(d + 16, "microSD boot    ", 16);
     RtlCopyMemory(d + 32, "1.0 ", 4);
-    ReturnData(Srb, d, 36);
+    ReturnData(X, Srb, d, 36);
 }
 
 static VOID DoModeSense(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Ten)
@@ -326,7 +342,7 @@ static VOID DoModeSense(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Ten)
     }
     if (Ten) { d[0] = (UCHAR)((len - 2) >> 8); d[1] = (UCHAR)(len - 2); }
     else d[0] = (UCHAR)(len - 1);
-    ReturnData(Srb, d, len);
+    ReturnData(X, Srb, d, len);
 }
 
 static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
@@ -341,7 +357,7 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
     case OP_REQUEST_SENSE:
         d[0] = 0x70; d[2] = X->Sense[0]; d[7] = 10; d[12] = X->Sense[1]; d[13] = X->Sense[2];
         X->Sense[0] = X->Sense[1] = X->Sense[2] = 0;
-        ReturnData(Srb, d, 18);
+        ReturnData(X, Srb, d, 18);
         break;
     case OP_INQUIRY:
         DoInquiry(X, Srb);
@@ -350,7 +366,7 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
         if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); break; }
         PutBe32(d, X->Sd.Blocks - 1 > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (ULONG)(X->Sd.Blocks - 1));
         PutBe32(d + 4, SD_BLOCK);
-        ReturnData(Srb, d, 8);
+        ReturnData(X, Srb, d, 8);
         break;
     case OP_SAI16:
         if ((Srb->Cdb[1] & 0x1F) != 0x10) { SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x20, 0); break; }
@@ -358,7 +374,7 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
         PutBe32(d, (ULONG)((X->Sd.Blocks - 1) >> 32));
         PutBe32(d + 4, (ULONG)(X->Sd.Blocks - 1));
         PutBe32(d + 8, SD_BLOCK);
-        ReturnData(Srb, d, 32);
+        ReturnData(X, Srb, d, 32);
         break;
     case OP_READ6: case OP_READ10: case OP_READ12: case OP_READ16:
         DoReadWrite(X, Srb, FALSE);
@@ -370,7 +386,7 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
     case OP_MODE_SENSE10: DoModeSense(X, Srb, TRUE);  break;
     case OP_REPORT_LUNS:
         d[3] = 8;                                /* one LUN, LUN 0 */
-        ReturnData(Srb, d, 16);
+        ReturnData(X, Srb, d, 16);
         break;
     case OP_START_STOP: case OP_PREVENT_ALLOW: case OP_VERIFY10: case OP_VERIFY16:
     case OP_SYNC_CACHE10: case OP_SYNC_CACHE16: case OP_MODE_SELECT6: case OP_MODE_SELECT10:
