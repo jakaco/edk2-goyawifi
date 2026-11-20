@@ -11,6 +11,7 @@
     goya-diag.cmd <W:> enable <service>        back to the INF start type
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
     goya-diag.cmd <W:> halext-files            copy System32\HalExt*.dll + hal.dll version info to .\goya-halext-<time>
+    goya-diag.cmd <W:> halext-install <dll>    put a (signed) HalExtMmpTimer.dll into System32 and register it
 
   <W:> is the card as it appears on the PC: either the Windows partition of a full Windows RT install, or
   a WinPE card (\sources\boot.wim). On a WinPE card the registry changes are made inside boot.wim (it is
@@ -43,7 +44,7 @@ function Run([string]$CmdLine, [switch]$Show) {
     return $LASTEXITCODE
 }
 
-$Changes = @('verifier-off', 'minidump', 'disable', 'enable', 'halext')
+$Changes = @('verifier-off', 'minidump', 'disable', 'enable', 'halext', 'halext-install')
 
 function Mount-PE {
     if (-not $IsPE) { return }
@@ -133,6 +134,13 @@ switch ($act) {
                     $state = if ($file -and (Test-Path $file)) { 'file found in System32' } elseif ($file) { 'FILE MISSING in System32' } else { 'NOT a bare file name - run "halext on" to fix' }
                     Write-Host "OSEDB $($_.PSChildName): $v   [$state]"
                 }
+            }
+            $files = @(Get-ChildItem "$Root\Windows\System32\HalExtMmpTimer.dll", "$Root\Windows\System32\drivers\goya*.sys", "$Root\Windows\System32\goyaosk.exe" -ErrorAction SilentlyContinue)
+            foreach ($f in $files) {
+                $sig = Get-AuthenticodeSignature $f.FullName
+                $who = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { 'NOT SIGNED' }
+                Write-Host ("file {0,-20} {1,7} bytes  {2}" -f $f.Name, $f.Length, $who)
+                if (-not $sig.SignerCertificate -and $f.Name -eq 'HalExtMmpTimer.dll') { Write-Host '  -> unsigned HAL extensions are never loaded: run "halext-install <signed HalExtMmpTimer.dll>"' -ForegroundColor Yellow }
             }
             $cc = Get-ItemProperty "$cs\Control\CrashControl" -ErrorAction SilentlyContinue
             Write-Host "CrashControl: CrashDumpEnabled=$($cc.CrashDumpEnabled) MinidumpDir=$($cc.MinidumpDir)"
@@ -228,7 +236,23 @@ switch ($act) {
         $info | ForEach-Object { Write-Host $_ }
         Write-Host "copied into $out :"; Get-ChildItem $out | Format-Table Name, Length
     }
-    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on, halext-files)" }
+    'halext-install' {
+        if (-not $Arg -or -not (Test-Path $Arg)) { throw 'usage: halext-install <path to HalExtMmpTimer.dll>' }
+        $sig = Get-AuthenticodeSignature $Arg
+        if (-not $sig.SignerCertificate) { throw "$Arg is not signed: HAL extensions must be signed (use the goya-drivers-signed package)" }
+        $eku = $sig.SignerCertificate.EnhancedKeyUsageList | ForEach-Object { $_.ObjectId }
+        if ($eku -notcontains '1.3.6.1.4.1.311.61.5.1') { throw "the signing certificate of $Arg lacks the HAL extension EKU (1.3.6.1.4.1.311.61.5.1)" }
+        Copy-Item $Arg "$Root\Windows\System32\HalExtMmpTimer.dll" -Force
+        With-SystemHive {
+            param($cs)
+            $k = "$cs\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001"
+            if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null }
+            Set-ItemProperty $k -Name HALExtension -Value 'HalExtMmpTimer.dll'
+            Remove-ItemProperty $k -Name HALExtension.goyaoff -ErrorAction SilentlyContinue
+        }
+        Write-Host "installed $Arg (signed by $($sig.SignerCertificate.Subject)) and registered HalExtMmpTimer.dll"
+    }
+    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on, halext-files, halext-install <dll>)" }
 }
 $ok = $true
 } finally {

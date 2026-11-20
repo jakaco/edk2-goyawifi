@@ -222,10 +222,14 @@ HalpMmpTimerRegister(
         NewTimer.FunctionTable.AcknowledgeInterrupt = HalpMmpEventAcknowledge;
         NewTimer.FunctionTable.ArmTimer = HalpMmpEventArm;
         NewTimer.FunctionTable.Stop = HalpMmpEventStop;
+        //
+        // Only flags the Windows 8 (build 8520) HAL is known to accept: Microsoft's own 8520 timer
+        // extensions (HalExtSP804) register the same TIMER_INITIALIZATION_BLOCK version/size (1/0x68)
+        // and never set TIMER_ALWAYS_ON (0x8000, Windows 10 header).
+        //
         NewTimer.Capabilities = TIMER_PERIODIC_CAPABLE |
                                 TIMER_ONE_SHOT_CAPABLE |
-                                TIMER_GENERATES_LINE_BASED_INTERRUPTS |
-                                TIMER_ALWAYS_ON;
+                                TIMER_GENERATES_LINE_BASED_INTERRUPTS;
         NewTimer.Interrupt.Mode = LevelSensitive;
         NewTimer.Interrupt.Polarity = InterruptActiveHigh;
         NewTimer.Interrupt.Gsi = Csrt->Interrupt;
