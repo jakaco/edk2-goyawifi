@@ -37,9 +37,9 @@ set WORK=C:\GoyaPE
 set HERE=%~dp0
 set MNT=%TEMP%\goyape-mount
 set HIVE=GOYAPE_SYSTEM
-rem Value written to OSExtensionDatabase\VEN_MRVL&DEV_0001 "HALExtension".
-rem If the HAL does not pick the extension up, this path format is the first suspect.
-set HALEXT_REGPATH=\SystemRoot\System32\HalExtMmpTimer.dll
+rem Value written to OSExtensionDatabase\VEN_MRVL&DEV_0001 "HALExtension": a bare file name in
+rem System32, the same format as the inbox entry VEN_ARMH&DEV_0310 = HalExtPL310.dll.
+set HALEXT_REGPATH=HalExtMmpTimer.dll
 
 net session >nul 2>&1 || (echo Needs an elevated prompt ^(Run as administrator^). & exit /b 1)
 if "%SD%"=="" goto usage
@@ -80,12 +80,6 @@ mkdir "%MNT%"
 dism /Mount-Image /ImageFile:"%WORK%\sources\boot.wim" /Index:1 /MountDir:"%MNT%" || goto fail
 copy /y "%HALEXT%" "%MNT%\Windows\System32\HalExtMmpTimer.dll" >nul || goto discard
 
-reg load HKLM\%HIVE% "%MNT%\Windows\System32\config\SYSTEM" >nul || goto discard
-reg add "HKLM\%HIVE%\ControlSet001\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t REG_SZ /d "%HALEXT_REGPATH%" /f >nul
-set RC=%errorlevel%
-reg unload HKLM\%HIVE% >nul
-if not "%RC%"=="0" goto discard
-echo   HAL extension registered: %HALEXT_REGPATH%
 
 rem kit layout: every INF in ..\drivers (goyasdhc gives WinPE access to the card as a disk);
 rem otherwise each driver next to this script or in ..\drivers\<name>\out (GitHub Actions artifacts)
@@ -98,12 +92,24 @@ reg unload HKLM\GOYAPE_SOFTWARE >nul
 if not "%RC%"=="0" goto discard
 :nocert
 if not exist "%KITDRV%\goyasdhc.inf" goto perdriver
-echo   adding all drivers from "%KITDRV%"
-dism /Image:"%MNT%" /Add-Driver /Driver:"%KITDRV%" /Recurse /ForceUnsigned || goto discard
+rem every goya*.inf; NOT HalExtMmpTimer.inf (the HAL extension is not a PnP driver here: its DLL and
+rem OSEDB entry are set directly, an offline INF AddReg would only overwrite that entry)
+for %%I in ("%KITDRV%\goya*.inf") do (
+  echo   adding %%~nxI
+  dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
+)
 goto drvdone
 :perdriver
 for %%N in (goyagpio goyai2c goyatouch goyakeys goyapinmux goyasdhc) do call :optdrv %%N || goto discard
 :drvdone
+
+rem HAL extension entry LAST, so that nothing added above can overwrite it
+reg load HKLM\%HIVE% "%MNT%\Windows\System32\config\SYSTEM" >nul || goto discard
+reg add "HKLM\%HIVE%\ControlSet001\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t REG_SZ /d "%HALEXT_REGPATH%" /f >nul
+set RC=%errorlevel%
+reg unload HKLM\%HIVE% >nul
+if not "%RC%"=="0" goto discard
+echo   HAL extension registered: %HALEXT_REGPATH%
 
 if not exist "%MNT%\Windows\System32\startnet.cmd" > "%MNT%\Windows\System32\startnet.cmd" echo wpeinit
 >> "%MNT%\Windows\System32\startnet.cmd" echo for %%%%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if exist %%%%d:\goyape\autorun.cmd call %%%%d:\goyape\autorun.cmd

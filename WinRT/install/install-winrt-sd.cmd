@@ -26,7 +26,7 @@ rem    Windows  rest  NTFS
 rem
 rem  Then: Goya drivers from ..\drivers (DISM /ForceUnsigned), the Goya test certificate
 rem  (GoyaTestCert.cer from the signed CI package) trusted in the image, goyasdhc forced to
-rem  boot start, HalExtMmpTimer.dll + OSExtensionDatabase entry, BCD with
+rem  boot start, HalExtMmpTimer.dll in System32 + OSExtensionDatabase entry (bare file name), BCD with
 rem  testsigning / nointegritychecks / onecpu / no recovery, unattend.xml (skips
 rem  OOBE, local account "Goya", no password) and a first-boot diagnostics script.
 rem ===========================================================================
@@ -41,7 +41,7 @@ set HERE=%~dp0
 set DRV=%HERE%..\drivers
 set HIVE=GOYART_SYSTEM
 set SWHIVE=GOYART_SOFTWARE
-set HALEXT_REGPATH=\SystemRoot\System32\HalExtMmpTimer.dll
+set HALEXT_REGPATH=HalExtMmpTimer.dll
 set DP=%TEMP%\goya-diskpart.txt
 
 net session >nul 2>&1 || (echo Needs an elevated prompt ^(Run as administrator^). & exit /b 1)
@@ -118,8 +118,11 @@ if not exist %W%:\ goto fail
 echo === 2/6 applying image index %IDX% to %W%:\ (takes a while on an SD card)
 dism /Apply-Image /ImageFile:"%WIM%" /Index:%IDX% /ApplyDir:%W%:\ || goto fail
 
-echo === 3/6 drivers
-dism /Image:%W%:\ /Add-Driver /Driver:"%DRV%" /Recurse /ForceUnsigned || goto fail
+echo === 3/6 drivers (goya*.inf; the HAL extension is registered directly in step 4)
+for %%I in ("%DRV%\goya*.inf") do (
+  echo   adding %%~nxI
+  dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
+)
 
 echo === 4/6 HAL extension, boot-start storage driver
 copy /y "%DRV%\HalExtMmpTimer.dll" %W%:\Windows\System32\HalExtMmpTimer.dll >nul || goto fail

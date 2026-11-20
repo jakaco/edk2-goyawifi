@@ -124,7 +124,15 @@ switch ($act) {
                 else { Write-Host ("service {0,-11} (not installed yet - PnP installs it on first boot)" -f $s) }
             }
             $osedb = "$cs\Control\OSExtensionDatabase"
-            if (Test-Path $osedb) { Get-ChildItem $osedb -Recurse | ForEach-Object { Write-Host "OSEDB $($_.PSChildName): $((Get-ItemProperty $_.PSPath).HALExtension)" } }
+            if (Test-Path $osedb) {
+                Get-ChildItem $osedb -Recurse | ForEach-Object {
+                    $v = (Get-ItemProperty $_.PSPath).HALExtension
+                    if (-not $v) { Write-Host "OSEDB $($_.PSChildName): (no HALExtension value)"; return }
+                    $file = if ($v -match '[\\:]') { $null } else { "$Root\Windows\System32\$v" }
+                    $state = if ($file -and (Test-Path $file)) { 'file found in System32' } elseif ($file) { 'FILE MISSING in System32' } else { 'NOT a bare file name - run "halext on" to fix' }
+                    Write-Host "OSEDB $($_.PSChildName): $v   [$state]"
+                }
+            }
             $cc = Get-ItemProperty "$cs\Control\CrashControl" -ErrorAction SilentlyContinue
             Write-Host "CrashControl: CrashDumpEnabled=$($cc.CrashDumpEnabled) MinidumpDir=$($cc.MinidumpDir)"
         }
@@ -199,8 +207,8 @@ switch ($act) {
                 Write-Host 'HAL extension disabled for the next boot (expect a different stop code if it is involved)'
             } else {
                 if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null }
-                $v = (Get-ItemProperty $k -ErrorAction SilentlyContinue).'HALExtension.goyaoff'
-                if (-not $v) { $v = '\SystemRoot\System32\HalExtMmpTimer.dll' }
+                $v = 'HalExtMmpTimer.dll'      # bare name in System32, like the inbox HalExtPL310.dll entry
+                if (-not (Test-Path "$Root\Windows\System32\$v")) { throw "$v is not in System32 of the image: rebuild the card with make-goya-sd.cmd / install-winrt-sd.cmd" }
                 Set-ItemProperty $k -Name HALExtension -Value $v
                 Remove-ItemProperty $k -Name HALExtension.goyaoff -ErrorAction SilentlyContinue
                 Write-Host "HAL extension enabled: $v"

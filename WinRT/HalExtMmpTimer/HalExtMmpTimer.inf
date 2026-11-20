@@ -14,7 +14,7 @@ CatalogFile=HalExtMmpTimer.cat
 ExcludeFromSelect=*
 
 [DestinationDirs]
-DefaultDestDir = 13 ; Driver Store
+DefaultDestDir = 11 ; System32 (DIRID 13, the driver store, exists only on Windows 10 1709+)
 
 [SourceDisksNames]
 3426=windows cd
@@ -33,7 +33,7 @@ AddReg = MMP_TIMERS_AddReg
 CopyFiles = MMP_TIMERS_CopyFiles
 
 [MMP_TIMERS_AddReg]
-HKLM,"%OSEDB%\VEN_MRVL&DEV_0001","HALExtension",,"%13%\HalExtMmpTimer.dll"
+HKLM,"%OSEDB%\VEN_MRVL&DEV_0001","HALExtension",,"HalExtMmpTimer.dll"
 
 [MMP_TIMERS_CopyFiles]
 HalExtMmpTimer.dll,,,0x00001000
