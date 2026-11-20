@@ -3,7 +3,8 @@
 
     powershell -ExecutionPolicy Bypass -File sign-goya-drivers.ps1 -Dir <folder> [-Thumbprint <cert>]
 
-  <folder> holds the *.inf and their *.sys / *.dll (goyagpio ... goyasdhc, HalExtMmpTimer).
+  <folder> holds the *.inf and their *.sys / *.dll (goyagpio ... goyasdhc, HalExtMmpTimer), and
+  optionally *.exe tools (goyaosk.exe), which get an embedded signature only.
   Without -Thumbprint a new self-signed test certificate is created in CurrentUser\My:
     - EKUs: Code Signing, Windows HAL Extension (1.3.6.1.4.1.311.61.5.1; winload refuses HAL
       extensions without it), Windows Hardware Driver Verification
@@ -77,7 +78,11 @@ try {
         Sign (Join-Path $Dir "$name.cat")
         Write-Host ("  signed {0,-16} {1}" -f $name, ((@($bins.Name) + "$name.cat") -join ', '))
     }
-    Get-ChildItem -File | Where-Object { $_.Extension -in '.sys', '.dll', '.cat' } | ForEach-Object {
+    foreach ($exe in Get-ChildItem -Filter *.exe) {      # user-mode tools (goyaosk): no INF / catalog
+        Sign $exe.FullName
+        Write-Host ("  signed {0,-16} {1}" -f $exe.BaseName, $exe.Name)
+    }
+    Get-ChildItem -File | Where-Object { $_.Extension -in '.sys', '.dll', '.cat', '.exe' } | ForEach-Object {
         $s = Get-AuthenticodeSignature $_.FullName
         if (-not $s.SignerCertificate -or $s.SignerCertificate.Thumbprint -ne $Thumbprint) { throw "$($_.Name) is not signed" }
     }

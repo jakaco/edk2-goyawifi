@@ -90,6 +90,21 @@ for %%N in (goyagpio goyai2c goyatouch goyakeys goyapinmux goyasdhc) do call :op
 
 if not exist "%MNT%\Windows\System32\startnet.cmd" > "%MNT%\Windows\System32\startnet.cmd" echo wpeinit
 >> "%MNT%\Windows\System32\startnet.cmd" echo for %%%%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if exist %%%%d:\goyape\autorun.cmd call %%%%d:\goyape\autorun.cmd
+
+rem on-screen keyboard as the WinPE shell: goyaosk starts cmd /k startnet.cmd above the keyboard;
+rem if it cannot run, winpeshl moves on to the plain cmd line
+set OSK=
+if exist "%HERE%goyaosk.exe" set OSK=%HERE%goyaosk.exe
+if exist "%HERE%..\drivers\goyaosk.exe" set OSK=%HERE%..\drivers\goyaosk.exe
+if not defined OSK goto noosk
+copy /y "%OSK%" "%MNT%\Windows\System32\goyaosk.exe" >nul || goto discard
+> "%MNT%\Windows\System32\winpeshl.ini" (
+  echo [LaunchApps]
+  echo %%SYSTEMROOT%%\System32\goyaosk.exe, /shell
+  echo %%SYSTEMROOT%%\System32\cmd.exe, /k %%SYSTEMROOT%%\System32\startnet.cmd
+)
+echo   goyaosk.exe installed as the WinPE shell ^(winpeshl.ini^)
+:noosk
 dism /Unmount-Image /MountDir:"%MNT%" /Commit || goto fail
 
 echo === 3/4 BCD

@@ -5,6 +5,7 @@ on:
     paths:
       - 'WinRT/drivers/**'
       - 'WinRT/HalExtMmpTimer/**'
+      - 'WinRT/goyaosk/**'
       - 'tools/sign-goya-drivers.ps1'
       - '.github/workflows/goya-drivers.yml'
   workflow_dispatch:
@@ -54,8 +55,24 @@ jobs:
             ${{ matrix.dir }}/${{ matrix.driver }}/${{ matrix.driver }}.inf
           if-no-files-found: error
 
+  goyaosk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (clang, lld, llvm-dlltool, mingw-w64 headers)
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm mingw-w64-common
+      - name: Build goyaosk.exe (ARM32 Thumb-2, no CRT)
+        run: |
+          bash WinRT/goyaosk/build.sh
+          llvm-objdump -d --triple=thumbv7-windows WinRT/goyaosk/out/goyaosk.exe | grep -qE '\b(sdiv|udiv)\b' && { echo 'hardware divide in a Cortex-A9 binary'; exit 1; } || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goyaosk-arm
+          path: WinRT/goyaosk/out/goyaosk.exe
+          if-no-files-found: error
+
   sign:
-    needs: build
+    needs: [build, goyaosk]
     runs-on: windows-2022
     permissions:
       contents: write
