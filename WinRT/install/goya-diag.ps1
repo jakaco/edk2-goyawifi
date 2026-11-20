@@ -10,6 +10,7 @@
     goya-diag.cmd <W:> disable <service>       Start=4 (e.g. goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
     goya-diag.cmd <W:> enable <service>        back to the INF start type
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
+    goya-diag.cmd <W:> halext-files            copy System32\HalExt*.dll + hal.dll version info to .\goya-halext-<time>
 
   <W:> is the card as it appears on the PC: either the Windows partition of a full Windows RT install, or
   a WinPE card (\sources\boot.wim). On a WinPE card the registry changes are made inside boot.wim (it is
@@ -108,7 +109,7 @@ $act = $Action.ToLower()
 if ($IsPE -and $act -in 'minidump', 'disable', 'enable') {
     throw "'$Action' does not apply to a WinPE card (WinPE runs from RAM and installs no Goya services)"
 }
-if ($act -in $Changes -or $act -eq 'info') { Mount-PE }
+if ($act -in $Changes -or $act -in 'info', 'halext-files') { Mount-PE }
 $ok = $false
 try {
 switch ($act) {
@@ -215,9 +216,21 @@ switch ($act) {
             }
         }
     }
-    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on)" }
+    'halext-files' {
+        $out = Join-Path (Get-Location) ("goya-halext-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        New-Item -ItemType Directory $out | Out-Null
+        $sys = "$Root\Windows\System32"
+        Get-ChildItem "$sys\HalExt*.dll" | ForEach-Object { Copy-Item $_.FullName $out }
+        $info = foreach ($f in @(Get-ChildItem "$sys\hal*.dll") + @(Get-Item "$sys\ntoskrnl.exe")) {
+            "{0,-22} {1,9} bytes  {2}" -f $f.Name, $f.Length, $f.VersionInfo.FileVersion
+        }
+        $info | Set-Content (Join-Path $out 'versions.txt')
+        $info | ForEach-Object { Write-Host $_ }
+        Write-Host "copied into $out :"; Get-ChildItem $out | Format-Table Name, Length
+    }
+    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on, halext-files)" }
 }
 $ok = $true
 } finally {
-    if ($IsPE -and ($act -in $Changes -or $act -eq 'info')) { Dismount-PE ($ok -and ($act -in $Changes)) }
+    if ($IsPE -and ($act -in $Changes -or $act -in 'info', 'halext-files')) { Dismount-PE ($ok -and ($act -in $Changes)) }
 }
