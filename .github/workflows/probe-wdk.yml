@@ -1,0 +1,25 @@
+name: Probe WDK (sdport / pinmux headers)
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/probe-wdk.yml']
+jobs:
+  probe:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install WDK
+        shell: pwsh
+        run: ./.github/scripts/install-wdk.ps1
+      - name: Search
+        shell: cmd
+        run: |
+          set K=C:\Program Files (x86)\Windows Kits\10
+          dir /s /b "%K%\Include\10.0.19041.0\*sdport*" 2>nul
+          dir /s /b "%K%\Include\10.0.19041.0\*sdbus*" 2>nul
+          dir /s /b "%K%\Lib\10.0.19041.0\*sdport*" 2>nul
+          dir /s /b "%K%\Include\10.0.19041.0\*gpioclx*" 2>nul
+          dir /s /b "%K%\Include\10.0.19041.0\km\*pin*" 2>nul
+          dir /s /b "%K%\Lib\10.0.19041.0\km\arm\*sd*.lib" 2>nul
+          dir /s /b "%K%\Lib\10.0.19041.0\km\arm\*storport*.lib" 2>nul
+          dir /s /b "%K%\Include\10.0.19041.0\km\*storport*" 2>nul
