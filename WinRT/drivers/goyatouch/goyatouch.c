@@ -270,16 +270,17 @@ static VOID OnTimer(WDFTIMER Timer)
     if (!T->Running) return;
     if (InterlockedExchange(&T->InTimer, 1)) return;           /* a slow poll must not overlap */
 
-    if (!SpbTgtOpen(dev, &T->Spb)) { InterlockedExchange(&T->InTimer, 0); return; }
-
-    if (!T->Initialized) {
-        if (T->RetryTicks++ % 32 == 0) {                       /* about every 0.5 s */
-            if (NT_SUCCESS(ZInitChip(T))) { T->Initialized = TRUE; T->PrevActive = 0; }
+    if (SpbTgtOpen(dev, &T->Spb)) {
+        if (!T->Initialized) {
+            if (T->RetryTicks++ % 32 == 0) {                   /* about every 0.5 s */
+                if (NT_SUCCESS(ZInitChip(T))) { T->Initialized = TRUE; T->PrevActive = 0; }
+            }
+        } else {
+            PollOnce(T);
         }
-    } else {
-        PollOnce(T);
     }
     InterlockedExchange(&T->InTimer, 0);
+    if (T->Running) WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(16));
 }
 
 /* ---- HID feature reports ---------------------------------------------------------- */
@@ -380,7 +381,9 @@ static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     st = HidMiniCreate(dev, &hc);
     if (!NT_SUCCESS(st)) return st;
 
-    WDF_TIMER_CONFIG_INIT_PERIODIC(&tc, OnTimer, 16);
+    /* KMDF: a passive-level timer cannot be periodic (WdfTimerCreate rejects a non-zero Period), so
+       this is a one-shot timer that OnTimer re-arms while the device is in D0. */
+    WDF_TIMER_CONFIG_INIT(&tc, OnTimer);
     tc.AutomaticSerialization = FALSE;
     WDF_OBJECT_ATTRIBUTES_INIT(&a);
     a.ParentObject = dev;
