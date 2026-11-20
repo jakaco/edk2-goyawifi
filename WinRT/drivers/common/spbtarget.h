@@ -3,6 +3,7 @@
 #pragma once
 #include <ntddk.h>
 #include <wdf.h>
+#define RESHUB_USE_HELPER_ROUTINES
 #include <reshub.h>
 
 typedef struct _SPB_TGT {
