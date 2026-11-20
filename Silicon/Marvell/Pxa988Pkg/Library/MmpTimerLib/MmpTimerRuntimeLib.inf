@@ -1,0 +1,33 @@
+## @file
+#  TimerLib for DXE_RUNTIME_DRIVER modules: MmpTimerLib + conversion of the timer base at
+#  SetVirtualAddressMap (each runtime module has its own copy of the library's globals).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = MmpTimerRuntimeLib
+  FILE_GUID                      = 9b2f4c1e-6a3d-4e8b-b5f0-2c7d81a4e6f3
+  MODULE_TYPE                    = DXE_RUNTIME_DRIVER
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = TimerLib|DXE_RUNTIME_DRIVER
+  CONSTRUCTOR                    = MmpTimerRuntimeLibConstructor
+
+[Sources]
+  MmpTimerLib.c
+  MmpTimerRuntimeLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DxeServicesTableLib
+  IoLib
+  UefiBootServicesTableLib
+  UefiRuntimeLib
+
+[Guids]
+  gEfiEventVirtualAddressChangeGuid

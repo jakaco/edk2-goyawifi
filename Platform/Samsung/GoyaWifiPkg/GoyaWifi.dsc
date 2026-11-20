@@ -157,6 +157,8 @@
 
 [LibraryClasses.common.DXE_RUNTIME_DRIVER]
   MemoryAllocationLib|MdePkg/Library/UefiMemoryAllocationLib/UefiMemoryAllocationLib.inf
+  # Each runtime module converts its own copy of the timer base at SetVirtualAddressMap
+  TimerLib|Silicon/Marvell/Pxa988Pkg/Library/MmpTimerLib/MmpTimerRuntimeLib.inf
   # Never touch the UART/framebuffer once the OS owns the machine
   DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
   VariablePolicyLib|MdeModulePkg/Library/VariablePolicyLib/VariablePolicyLibRuntimeDxe.inf
