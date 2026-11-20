@@ -34,6 +34,7 @@
 #include <Library/UefiRuntimeServicesTableLib.h>
 
 #include <Protocol/BlockIo.h>
+#include <Protocol/Cpu.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Pxa988.h>
 
@@ -202,6 +203,154 @@ ShowTimerIrq (
   Print (L"Timer IRQ: %u events in 1 s (expect 10) %s\n", mTicks, (mTicks >= 9 && mTicks <= 11) ? L"OK" : L"CHECK");
 }
 
+//
+// CPU debug registers (CP14). Windows' kernel programs them while it starts
+// (OS Lock, DBGPRSR, DBGDSCRext, DBGVCR, breakpoints). If the debug logic is
+// powered down or locked, those instructions are UNDEFINED and Windows stops
+// very early. Each probe is one instruction (DbgProbe.S); an Undefined
+// Instruction / Data Abort exception is caught here and reported.
+//
+typedef UINT32 (EFIAPI *DBG_PROBE)(UINT32 Value);
+UINT32 EFIAPI GoyaDbgIdDfr0 (UINT32);
+UINT32 EFIAPI GoyaDbgDidr (UINT32);
+UINT32 EFIAPI GoyaDbgDrar (UINT32);
+UINT32 EFIAPI GoyaDbgDsar (UINT32);
+UINT32 EFIAPI GoyaDbgOslsr (UINT32);
+UINT32 EFIAPI GoyaDbgPrsr (UINT32);
+UINT32 EFIAPI GoyaDbgOslarW (UINT32);
+UINT32 EFIAPI GoyaDbgDscrInt (UINT32);
+UINT32 EFIAPI GoyaDbgDscrExt (UINT32);
+UINT32 EFIAPI GoyaDbgDscrExtW (UINT32);
+UINT32 EFIAPI GoyaDbgVcrW (UINT32);
+UINT32 EFIAPI GoyaDbgBcr0 (UINT32);
+UINT32 EFIAPI GoyaDbgBcr0W (UINT32);
+UINT32 EFIAPI GoyaDbgBvr0W (UINT32);
+UINT32 EFIAPI GoyaDbgWcr0W (UINT32);
+UINT32 EFIAPI GoyaDbgWfar (UINT32);
+
+STATIC volatile UINTN  mDbgFault;
+
+STATIC
+VOID
+EFIAPI
+DbgProbeFaultHandler (
+  IN EFI_EXCEPTION_TYPE  ExceptionType,
+  IN EFI_SYSTEM_CONTEXT  SystemContext
+  )
+{
+  EFI_SYSTEM_CONTEXT_ARM  *Ctx = SystemContext.SystemContextArm;
+
+  mDbgFault = ExceptionType;
+  Ctx->R0   = 0xDEADC0DE;
+  // Return to the probe's caller; clear the IT bits and set the Thumb bit from lr
+  Ctx->CPSR = (Ctx->CPSR & ~(UINT32)(0x20 | 0x0600FC00)) | ((Ctx->LR & 1) ? 0x20 : 0);
+  Ctx->PC   = Ctx->LR & ~(UINT32)1;
+}
+
+STATIC
+BOOLEAN
+DbgProbe (
+  IN  DBG_PROBE  Probe,
+  IN  UINT32     In,
+  OUT UINT32     *Out
+  )
+{
+  mDbgFault = 0;
+  *Out      = Probe (In);
+  return mDbgFault == 0;
+}
+
+STATIC
+VOID
+DbgShow (
+  IN CONST CHAR16  *Name,
+  IN DBG_PROBE     Probe,
+  IN UINT32        In,
+  IN BOOLEAN       Write,
+  OUT UINT32       *Out
+  )
+{
+  UINT32  V = 0;
+
+  if (DbgProbe (Probe, In, &V)) {
+    if (Write) {
+      Print (L" %s<-%x ok", Name, In);
+    } else {
+      Print (L" %s=%08x", Name, V);
+    }
+  } else {
+    Print (L" %s=%s", Name, (mDbgFault == EXCEPT_ARM_UNDEFINED_INSTRUCTION) ? L"UNDEF" : L"ABORT");
+    V = 0;
+  }
+
+  if (Out != NULL) {
+    *Out = V;
+  }
+}
+
+STATIC
+VOID
+ShowCpuDebug (
+  VOID
+  )
+{
+  EFI_CPU_ARCH_PROTOCOL  *Cpu;
+  UINT32                 V;
+  UINT32                 Oslsr;
+  UINT32                 Prsr;
+  UINT32                 Dscr;
+  BOOLEAN                Undef, Abort;
+
+  if (EFI_ERROR (gBS->LocateProtocol (&gEfiCpuArchProtocolGuid, NULL, (VOID **)&Cpu))) {
+    Print (L"Debug regs: no CPU protocol\n");
+    return;
+  }
+
+  Undef = !EFI_ERROR (Cpu->RegisterInterruptHandler (Cpu, EXCEPT_ARM_UNDEFINED_INSTRUCTION, DbgProbeFaultHandler));
+  Abort = !EFI_ERROR (Cpu->RegisterInterruptHandler (Cpu, EXCEPT_ARM_DATA_ABORT, DbgProbeFaultHandler));
+  if (!Undef) {
+    Print (L"Debug regs: cannot hook Undefined Instruction, skipped\n");
+    goto Done;
+  }
+
+  Print (L"Debug (what Windows does at start-up):\n ");
+  DbgShow (L"ID_DFR0", GoyaDbgIdDfr0, 0, FALSE, NULL);
+  DbgShow (L"DIDR", GoyaDbgDidr, 0, FALSE, NULL);
+  DbgShow (L"DRAR", GoyaDbgDrar, 0, FALSE, NULL);
+  DbgShow (L"DSAR", GoyaDbgDsar, 0, FALSE, NULL);
+  Print (L"\n ");
+  DbgShow (L"OSLSR", GoyaDbgOslsr, 0, FALSE, &Oslsr);
+  if (Oslsr & 2) {
+    DbgShow (L"OSLAR", GoyaDbgOslarW, 0, TRUE, NULL);
+    DbgShow (L"OSLSR", GoyaDbgOslsr, 0, FALSE, &Oslsr);
+  }
+  DbgShow (L"PRSR", GoyaDbgPrsr, 0, FALSE, &Prsr);
+  DbgShow (L"PRSR", GoyaDbgPrsr, 0, FALSE, &V);
+  Print (L" (PU=%u SPD=%u)\n ", V & 1, (V >> 1) & 1);
+  DbgShow (L"DSCRint", GoyaDbgDscrInt, 0, FALSE, NULL);
+  DbgShow (L"DSCRext", GoyaDbgDscrExt, 0, FALSE, &Dscr);
+  if (mDbgFault == 0) {
+    DbgShow (L"DSCRext", GoyaDbgDscrExtW, Dscr | 0x1000, TRUE, NULL);
+  }
+  Print (L"\n ");
+  DbgShow (L"VCR", GoyaDbgVcrW, 0, TRUE, NULL);
+  DbgShow (L"BCR0", GoyaDbgBcr0, 0, FALSE, NULL);
+  DbgShow (L"BCR0", GoyaDbgBcr0W, 0, TRUE, NULL);
+  DbgShow (L"BVR0", GoyaDbgBvr0W, 0, TRUE, NULL);
+  DbgShow (L"WCR0", GoyaDbgWcr0W, 0, TRUE, NULL);
+  DbgShow (L"WFAR", GoyaDbgWfar, 0, FALSE, NULL);
+  Print (L"\n");
+
+Done:
+  if (Undef) {
+    Cpu->RegisterInterruptHandler (Cpu, EXCEPT_ARM_UNDEFINED_INSTRUCTION, NULL);
+  }
+
+  if (Abort) {
+    Cpu->RegisterInterruptHandler (Cpu, EXCEPT_ARM_DATA_ABORT, NULL);
+  }
+}
+
 STATIC
 VOID
 ShowSystem (
@@ -228,6 +377,7 @@ ShowSystem (
          (Midr >> 20) & 0xF, Midr & 0xF, ArmReadMpidr ());
 
   ShowTimerIrq ();
+  ShowCpuDebug ();
 
   Typer = MmioRead32 (PXA_GIC_D + GICD_TYPER);
   Print (L"GIC   %u IRQs, %u CPU(s), GICD_CTLR %x GICC_CTLR %x, IIDR %08x / %08x\n",

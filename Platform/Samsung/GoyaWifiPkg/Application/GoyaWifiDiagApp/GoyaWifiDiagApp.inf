@@ -17,6 +17,7 @@
 
 [Sources]
   GoyaWifiDiagApp.c
+  DbgProbe.S
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -40,6 +41,7 @@
 
 [Protocols]
   gEfiBlockIoProtocolGuid
+  gEfiCpuArchProtocolGuid
   gEfiGraphicsOutputProtocolGuid
   gEfiUsbIoProtocolGuid
 
