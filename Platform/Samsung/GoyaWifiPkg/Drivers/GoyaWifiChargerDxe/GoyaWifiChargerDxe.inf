@@ -1,0 +1,39 @@
+## @file
+#  Summit SMB328 battery charger bring-up (bit-banged I2C on GPIO 16/17), ported from the 4.19
+#  smb328-charger.c of the SM-T110. Runs only while UEFI boot services are alive.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = GoyaWifiChargerDxe
+  FILE_GUID                      = 5c1e7a30-6d94-4f08-b2a1-93e0c47d5a18
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = ChargerInitialize
+
+[Sources]
+  GoyaWifiChargerDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  IoLib
+  PrintLib
+  TimerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiRuntimeServicesTableLib
+
+[Guids]
+  gPxa988TokenSpaceGuid
+
+[Depex]
+  gEfiVariableWriteArchProtocolGuid

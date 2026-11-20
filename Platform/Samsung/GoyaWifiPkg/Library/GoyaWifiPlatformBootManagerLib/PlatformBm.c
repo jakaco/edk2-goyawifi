@@ -34,6 +34,7 @@
 #include <Guid/NonDiscoverableDevice.h>
 #include <Guid/TtyTerm.h>
 #include <Guid/SerialPortLibVendor.h>
+#include <Guid/Pxa988UsbSerial.h>
 
 #include "PlatformBm.h"
 
@@ -768,7 +769,26 @@ PlatformBootManagerBeforeConsole (
     );
 
   //
-  // goyawifi: no serial console. The UART is only used to mirror the debug
+  // USB serial console: the CDC-ACM gadget of Pxa988UsbDxe (device mode, forced full speed) shows up
+  // as an EFI_SERIAL_IO handle; TerminalDxe turns it into a console. Output is swallowed while no
+  // host has the port open, so this never blocks. (The debug UART is deliberately not a console.)
+  //
+  {
+    STATIC PLATFORM_SERIAL_CONSOLE  UsbSerial = {
+      { { HARDWARE_DEVICE_PATH, HW_VENDOR_DP, DP_NODE_LEN (VENDOR_DEVICE_PATH) }, PXA988_USB_SERIAL_GUID },
+      { { MESSAGING_DEVICE_PATH, MSG_UART_DP, DP_NODE_LEN (UART_DEVICE_PATH) }, 0, 115200, 8, 1, 1 },
+      { { MESSAGING_DEVICE_PATH, MSG_VENDOR_DP, DP_NODE_LEN (VENDOR_DEFINED_DEVICE_PATH) } },
+      { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE, DP_NODE_LEN (EFI_DEVICE_PATH_PROTOCOL) }
+    };
+
+    CopyGuid (&UsbSerial.TermType.Guid, &gEfiTtyTermGuid);
+    EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&UsbSerial, NULL);
+    EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&UsbSerial, NULL);
+    EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&UsbSerial, NULL);
+  }
+
+  //
+  // goyawifi: no UART console. The UART is only used to mirror the debug
   // log onto the screen, and a Terminal console on it would echo every
   // VT100 escape sequence of the UI into that log. Keys come from
   // GoyaWifiKeypadDxe (Simple Text Input), the display from the GOP.

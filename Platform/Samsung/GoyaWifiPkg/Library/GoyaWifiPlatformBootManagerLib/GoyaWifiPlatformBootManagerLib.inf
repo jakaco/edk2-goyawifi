@@ -34,6 +34,7 @@
   MdeModulePkg/MdeModulePkg.dec
   MdePkg/MdePkg.dec
   ShellPkg/ShellPkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
 
 [LibraryClasses]
   BaseLib
@@ -67,6 +68,7 @@
   gEfiMdeModulePkgTokenSpaceGuid.PcdEmuVariableNvModeEnable
 
 [Guids]
+  gEfiTtyTermGuid
   gBootDiscoveryPolicyMgrFormsetGuid
   gEdkiiNonDiscoverableEhciDeviceGuid
   gEdkiiNonDiscoverableUhciDeviceGuid

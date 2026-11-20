@@ -293,6 +293,7 @@
   MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
   MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
   MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
+  MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
   MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
   MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf {
     <LibraryClasses>
@@ -301,12 +302,14 @@
   }
   Silicon/Marvell/Pxa988Pkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
   Platform/Samsung/GoyaWifiPkg/Drivers/GoyaWifiKeypadDxe/GoyaWifiKeypadDxe.inf
+  Platform/Samsung/GoyaWifiPkg/Drivers/GoyaWifiChargerDxe/GoyaWifiChargerDxe.inf
 
   #
   # Storage: PXAv3 SDHCI via the generic SD/MMC stack
   #
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SdhciDxe/Pxa988SdhciDxe.inf
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988SmpDxe/Pxa988SmpDxe.inf
+  Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988DvfsDxe/Pxa988DvfsDxe.inf
   Platform/Samsung/GoyaWifiPkg/Application/GoyaWifiDiagApp/GoyaWifiDiagApp.inf
   Silicon/Marvell/Pxa988Pkg/Drivers/Pxa988UsbDxe/Pxa988UsbDxe.inf
   Silicon/Marvell/Pxa988Pkg/Drivers/ChipIdeaEhciDxe/ChipIdeaEhciDxe.inf

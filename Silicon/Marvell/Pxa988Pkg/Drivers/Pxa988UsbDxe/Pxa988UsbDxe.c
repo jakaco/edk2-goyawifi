@@ -31,6 +31,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 #include <Pxa988.h>
+#include "UsbGadget.h"
 
 #define PHY_PLL_CTRL1     0x08
 #define PHY_PLL_READY     BIT15
@@ -181,6 +182,13 @@ Pxa988UsbInitialize (
   //
   if ((MmioRead32 (PXA988_USB_EHCI_BASE + USB_EHCI_USBMODE) & 3) != USBMODE_CM_HOST) {
     Log ("host mode not accepted by the controller: EHCI not registered (no fake USB attach)\n");
+    {
+      CHAR8  GadgetLine[160];
+
+      Status = UsbGadgetStart (GadgetLine, sizeof (GadgetLine));
+      Log ("%a", GadgetLine);
+    }
+
     return EFI_SUCCESS;
   }
 

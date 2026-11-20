@@ -1,0 +1,42 @@
+## @file
+#  One-shot CPU frequency change to the 1066 MHz operating point at boot (ported from the 4.19
+#  clk-of-pxa988.c core clock + regulator OPP table), with buck1 voltage floor check.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Pxa988DvfsDxe
+  FILE_GUID                      = a7d3e902-14c8-4b5f-9e61-2c0d58b7f4a3
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DvfsInitialize
+
+[Sources]
+  Pxa988DvfsDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  DebugLib
+  IoLib
+  PrintLib
+  Pm822Lib
+  TimerLib
+  UefiDriverEntryPoint
+  UefiRuntimeServicesTableLib
+
+[Guids]
+  gPxa988TokenSpaceGuid
+
+[FixedPcd]
+  gPxa988TokenSpaceGuid.PcdDvfsEnable
+
+[Depex]
+  gEfiVariableWriteArchProtocolGuid
