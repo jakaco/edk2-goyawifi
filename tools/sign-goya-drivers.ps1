@@ -75,7 +75,7 @@ try {
         if ($LASTEXITCODE -or -not (Test-Path "$name.cat")) { throw "makecat failed for $name" }
         Remove-Item $cdf
         Sign (Join-Path $Dir "$name.cat")
-        Write-Host ("  signed {0,-16} {1}" -f $name, (($bins.Name + "$name.cat") -join ', '))
+        Write-Host ("  signed {0,-16} {1}" -f $name, ((@($bins.Name) + "$name.cat") -join ', '))
     }
     Get-ChildItem -File | Where-Object { $_.Extension -in '.sys', '.dll', '.cat' } | ForEach-Object {
         $s = Get-AuthenticodeSignature $_.FullName

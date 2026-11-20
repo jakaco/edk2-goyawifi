@@ -57,6 +57,8 @@ jobs:
   sign:
     needs: build
     runs-on: windows-2022
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -74,3 +76,19 @@ jobs:
           name: goya-drivers-signed
           path: pkg/*
           if-no-files-found: error
+      - name: Publish to the signed-drivers branch (main only)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $src = (Resolve-Path pkg).Path
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --orphan signed-drivers
+          git rm -rf --quiet .
+          git clean -fdxq -e pkg
+          Copy-Item "$src\*" . 
+          Remove-Item -Recurse -Force pkg
+          "Test-signed Goya Windows RT drivers built from $env:GITHUB_SHA (run $env:GITHUB_RUN_ID). Copy everything into the kit's drivers\ folder." | Set-Content README.txt
+          git add -A
+          git commit -q -m "signed drivers from $env:GITHUB_SHA"
+          git push -f origin signed-drivers
