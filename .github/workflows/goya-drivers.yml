@@ -81,6 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $src = (Resolve-Path pkg).Path
+          git config core.autocrlf false
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git checkout --orphan signed-drivers
@@ -89,6 +90,8 @@ jobs:
           Copy-Item "$src\*" . 
           Remove-Item -Recurse -Force pkg
           "Test-signed Goya Windows RT drivers built from $env:GITHUB_SHA (run $env:GITHUB_RUN_ID). Copy everything into the kit's drivers\ folder." | Set-Content README.txt
+          # catalogs hash the INFs byte for byte: store every file unchanged (no CRLF->LF)
+          Set-Content .gitattributes '* -text' -NoNewline
           git add -A
           git commit -q -m "signed drivers from $env:GITHUB_SHA"
           git push -f origin signed-drivers
