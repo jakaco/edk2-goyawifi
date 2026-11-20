@@ -1,0 +1,141 @@
+<#
+  goya-diag.ps1 - inspect / change the Windows RT installation on the goyawifi microSD card OFFLINE,
+  from a Windows 10/11 PC (elevated). Use through goya-diag.cmd.
+
+    goya-diag.cmd <W:> info                    verifier, Goya services, crash settings, last boot log lines
+    goya-diag.cmd <W:> collect                 copy ntbtlog, minidumps, setup logs, diag.txt to .\goya-collect-<time>
+    goya-diag.cmd <W:> verifier-off            remove Driver Verifier settings from the image
+    goya-diag.cmd <W:> bootlog on|off          \Windows\ntbtlog.txt lists every driver loaded (last line = crash point)
+    goya-diag.cmd <W:> minidump on             small crash dumps to \Windows\Minidump (needs a page file; set)
+    goya-diag.cmd <W:> disable <service>       Start=4 (e.g. goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
+    goya-diag.cmd <W:> enable <service>        back to the INF start type
+
+  <W:> is the card's Windows partition as it appears on the PC. The SYSTEM (boot) partition is found
+  automatically on the same disk for the BCD changes.
+#>
+param(
+    [Parameter(Mandatory = $true)][string]$Win,
+    [Parameter(Mandatory = $true)][string]$Action,
+    [string]$Arg
+)
+$ErrorActionPreference = 'Stop'
+$Win = $Win.TrimEnd('\').TrimEnd(':') + ':'
+if (-not (Test-Path "$Win\Windows\System32\config\SYSTEM")) { throw "$Win does not hold a Windows installation" }
+
+$GoyaServices = [ordered]@{ goyasdhc = 0; goyapinmux = 3; goyagpio = 3; goyai2c = 3; goyatouch = 3; goyakeys = 3; mshidkmdf = 3 }
+$HiveName = 'GOYADIAG_SYSTEM'
+
+function With-SystemHive([scriptblock]$Body) {
+    & reg.exe unload "HKLM\$HiveName" 2>$null | Out-Null
+    & reg.exe load "HKLM\$HiveName" "$Win\Windows\System32\config\SYSTEM" | Out-Null
+    if ($LASTEXITCODE) { throw "cannot load the SYSTEM hive of $Win (is Windows on the card still mounted elsewhere?)" }
+    try {
+        $sel = (Get-ItemProperty "HKLM:\$HiveName\Select").Current
+        $cs = "HKLM:\$HiveName\ControlSet{0:d3}" -f $sel
+        & $Body $cs
+    } finally {
+        [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+        & reg.exe unload "HKLM\$HiveName" | Out-Null
+    }
+}
+
+function Find-Bcd {
+    $disk = (Get-Partition -DriveLetter $Win.TrimEnd(':')).DiskNumber
+    foreach ($p in Get-Partition -DiskNumber $disk) {
+        $isSys = ($p.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}') -or ($p.IsActive -and $p.Size -lt 1GB)
+        if (-not $isSys) { continue }
+        $letter = $p.DriveLetter
+        $added = $false
+        if (-not $letter) {
+            $letter = [char[]](83..90 + 77..82) | Where-Object { -not (Test-Path "$($_):\") } | Select-Object -First 1
+            Add-PartitionAccessPath -DiskNumber $disk -PartitionNumber $p.PartitionNumber -AccessPath "$($letter):\"
+            $added = $true
+        }
+        $bcd = "$($letter):\EFI\Microsoft\Boot\BCD"
+        if (Test-Path $bcd) { return @{ Bcd = $bcd; Letter = $letter; Disk = $disk; Part = $p.PartitionNumber; Added = $added } }
+        if ($added) { Remove-PartitionAccessPath -DiskNumber $disk -PartitionNumber $p.PartitionNumber -AccessPath "$($letter):\" }
+    }
+    throw "no SYSTEM partition with \EFI\Microsoft\Boot\BCD on the disk of $Win"
+}
+
+function Release-Bcd($b) {
+    if ($b.Added) { Remove-PartitionAccessPath -DiskNumber $b.Disk -PartitionNumber $b.Part -AccessPath "$($b.Letter):\" }
+}
+
+switch ($Action.ToLower()) {
+    'info' {
+        With-SystemHive {
+            param($cs)
+            $mm = Get-ItemProperty "$cs\Control\Session Manager\Memory Management"
+            Write-Host "Driver Verifier: VerifyDrivers='$($mm.VerifyDrivers)' VerifyDriverLevel=$($mm.VerifyDriverLevel)"
+            if ($mm.VerifyDrivers -or $mm.VerifyDriverLevel) { Write-Host '  -> verifier is configured: run "verifier-off"' -ForegroundColor Yellow }
+            foreach ($s in $GoyaServices.Keys) {
+                $k = "$cs\Services\$s"
+                if (Test-Path $k) { $v = Get-ItemProperty $k; Write-Host ("service {0,-11} Start={1} ImagePath={2}" -f $s, $v.Start, $v.ImagePath) }
+                else { Write-Host ("service {0,-11} (not installed yet - PnP installs it on first boot)" -f $s) }
+            }
+            $osedb = "$cs\Control\OSExtensionDatabase"
+            if (Test-Path $osedb) { Get-ChildItem $osedb -Recurse | ForEach-Object { Write-Host "OSEDB $($_.PSChildName): $((Get-ItemProperty $_.PSPath).HALExtension)" } }
+            $cc = Get-ItemProperty "$cs\Control\CrashControl" -ErrorAction SilentlyContinue
+            Write-Host "CrashControl: CrashDumpEnabled=$($cc.CrashDumpEnabled) MinidumpDir=$($cc.MinidumpDir)"
+        }
+        $log = "$Win\Windows\ntbtlog.txt"
+        if (Test-Path $log) { Write-Host "--- last lines of ntbtlog.txt (last 'Loaded' = last driver that loaded):"; Get-Content $log -Encoding Unicode | Select-Object -Last 12 }
+        else { Write-Host 'no ntbtlog.txt yet (run "bootlog on" and boot once)' }
+        $md = Get-ChildItem "$Win\Windows\Minidump" -ErrorAction SilentlyContinue
+        Write-Host "minidumps: $(@($md).Count)"; $md | Format-Table Name, Length, LastWriteTime
+    }
+    'collect' {
+        $out = Join-Path (Get-Location) ("goya-collect-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        New-Item -ItemType Directory $out | Out-Null
+        foreach ($f in 'Windows\ntbtlog.txt', 'Windows\Panther\setupact.log', 'Windows\Panther\setuperr.log',
+                       'Windows\Panther\UnattendGC\setupact.log', 'Windows\inf\setupapi.dev.log', 'Windows\inf\setupapi.offline.log',
+                       'goya\diag.txt', 'Windows\System32\LogFiles\Srt\SrtTrail.txt') {
+            if (Test-Path "$Win\$f") { Copy-Item "$Win\$f" (Join-Path $out ($f -replace '\\', '_')) }
+        }
+        if (Test-Path "$Win\Windows\Minidump") { Copy-Item "$Win\Windows\Minidump" (Join-Path $out 'Minidump') -Recurse }
+        if (Test-Path "$Win\Windows\MEMORY.DMP") { Write-Host "MEMORY.DMP present ($((Get-Item "$Win\Windows\MEMORY.DMP").Length) bytes), not copied" }
+        Write-Host "collected into $out"; Get-ChildItem $out -Recurse | Format-Table FullName, Length
+    }
+    'verifier-off' {
+        With-SystemHive {
+            param($cs)
+            $k = "$cs\Control\Session Manager\Memory Management"
+            foreach ($n in 'VerifyDrivers', 'VerifyDriverLevel', 'VerifierOptions', 'VerifierFlags') { Remove-ItemProperty $k -Name $n -ErrorAction SilentlyContinue }
+            Write-Host 'Driver Verifier settings removed'
+        }
+    }
+    'bootlog' {
+        $b = Find-Bcd
+        try {
+            if ($Arg -eq 'off') { & bcdedit.exe /store $b.Bcd /deletevalue '{default}' bootlog } else { & bcdedit.exe /store $b.Bcd /set '{default}' bootlog yes }
+            & bcdedit.exe /store $b.Bcd /enum '{default}'
+        } finally { Release-Bcd $b }
+    }
+    'minidump' {
+        With-SystemHive {
+            param($cs)
+            $k = "$cs\Control\CrashControl"
+            if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null }
+            Set-ItemProperty $k -Name CrashDumpEnabled -Value 3 -Type DWord
+            Set-ItemProperty $k -Name MinidumpDir -Value '%SystemRoot%\Minidump' -Type ExpandString
+            Set-ItemProperty $k -Name AutoReboot -Value 0 -Type DWord
+            $mm = "$cs\Control\Session Manager\Memory Management"
+            Set-ItemProperty $mm -Name PagingFiles -Value @('C:\pagefile.sys 256 512') -Type MultiString
+            Write-Host 'minidumps on (C:\pagefile.sys 256-512 MB, no auto reboot). Open them with WinDbg: !analyze -v, lm'
+        }
+    }
+    { $_ -in 'disable', 'enable' } {
+        if (-not $Arg -or -not $GoyaServices.Contains($Arg)) { throw "service must be one of: $($GoyaServices.Keys -join ', ')" }
+        if ($Arg -eq 'goyasdhc' -and $Action -eq 'disable') { throw 'goyasdhc is the boot disk driver: disabling it makes Windows unbootable' }
+        With-SystemHive {
+            param($cs)
+            $k = "$cs\Services\$Arg"
+            if (-not (Test-Path $k)) { throw "$Arg is not installed in this image yet" }
+            $start = if ($Action -eq 'disable') { 4 } else { $GoyaServices[$Arg] }
+            Set-ItemProperty $k -Name Start -Value $start -Type DWord
+            Write-Host "$Arg Start=$start"
+        }
+    }
+    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>)" }
+}
