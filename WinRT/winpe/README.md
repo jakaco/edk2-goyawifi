@@ -7,9 +7,10 @@ ARM32; the media comes from your build, e.g. 8520). These scripts never fetch Wi
 
 1. FAT32-format a microSD (<= 32 GB).
 2. Build `HalExtMmpTimer.dll` (GitHub Actions artifact `HalExtMmpTimer-w10-arm`) and put it next to `make-goya-sd.cmd`.
-   Put any Goya driver `.inf/.sys` (`goyagpio`, `goyai2c`, `goyatouch`, `goyakeys`, `goyasd`) there too, if you have them.
+   Put any Goya driver `.inf/.sys` (`goyagpio`, `goyai2c`, `goyatouch`, `goyakeys`, `goyapinmux`, `goyasdhc`) there too,
+   or keep the goyawifi kit layout (`..\drivers\` holds all drivers + HalExtMmpTimer.dll; they are then added with one DISM call).
 3. Elevated cmd on a Windows 10 PC: `make-goya-sd.cmd E: C:\winpe-arm-media`
-4. Tablet: `fastboot boot goyawifi-uefi-winrt-release-boot.img` (from `goyawifi-edk2-test6.zip`), with the card inserted.
+4. Tablet: boot `goyawifi-uefi-winrt-release.img` (Odin or U-Boot fastboot, see the kit README), with the card inserted.
 5. After the boot, `\goyape\diag.txt` on the card lists drivers, device error codes and the HAL extension key.
 
 What to expect at first: a boot with only HalExtMmpTimer (no input drivers) is the first milestone. The screen comes from
@@ -19,4 +20,4 @@ run; `autorun.cmd` writing `diag.txt` to the card proves it got to the shell (ne
 ## Drivers from CI
 `goya-drivers.yml` builds each driver under `WinRT/drivers/<name>/` and uploads `<name>-arm` (sys + inf).
 Unzip an artifact so the files end up in `WinRT/drivers/<name>/out/` (or next to `make-goya-sd.cmd`); the script adds them
-with DISM. Current drivers: `goyagpio` (GpioClx, ACPI `MRVL0003`). Planned: `goyai2c` (SpbCx), `goyatouch`, `goyakeys`.
+with DISM. Current drivers: goyagpio, goyai2c, goyatouch, goyakeys, goyapinmux, goyasdhc (microSD as a disk). For a full Windows RT install on the card see `..\install\`.

@@ -17,10 +17,12 @@ rem                          copype for ARM32, so the media must come from your
 rem                          own Windows RT 8.0 build; this script never
 rem                          downloads any Windows files)
 rem    halext.dll           optional, default: HalExtMmpTimer.dll next to this script
+rem                         or in ..\drivers\ (the goyawifi kit layout)
 rem
 rem  It will: copy the media to C:\GoyaPE, add HalExtMmpTimer.dll and its
 rem  OSExtensionDatabase entry to the offline SYSTEM hive, add every Goya driver
-rem  found next to this script (goyagpio, goyai2c, goyatouch, goyakeys, ...) with
+rem  found in ..\drivers\ (kit layout) or next to this script (goyagpio, goyai2c,
+rem  goyatouch, goyakeys, goyapinmux, goyasdhc) with
 rem  DISM /ForceUnsigned, set the BCD (testsigning, nointegritychecks, onecpu),
 rem  and copy everything to the card together with \goyape\autorun.cmd.
 rem ===========================================================================
@@ -44,6 +46,7 @@ for %%F in ("%MEDIA%\efi\boot\bootarm.efi" "%MEDIA%\boot\boot.sdi" "%MEDIA%\sour
   if not exist %%F (echo Missing %%~F in the WinPE media folder. & exit /b 1)
 )
 if "%HALEXT%"=="" set HALEXT=%HERE%HalExtMmpTimer.dll
+if not exist "%HALEXT%" if exist "%HERE%..\drivers\HalExtMmpTimer.dll" set HALEXT=%HERE%..\drivers\HalExtMmpTimer.dll
 if not exist "%HALEXT%" (echo Missing HalExtMmpTimer.dll ^(build it: WinRT\HalExtMmpTimer, or the GitHub Actions artifact^). & exit /b 1)
 
 echo === 1/4 copying WinPE media to %WORK%
@@ -67,8 +70,16 @@ reg unload HKLM\%HIVE% >nul
 if not "%RC%"=="0" goto discard
 echo   HAL extension registered: %HALEXT_REGPATH%
 
-rem every driver INF next to this script or in ..\drivers\<name>\out (GitHub Actions artifacts)
-for %%N in (goyagpio goyai2c goyatouch goyakeys goyasd) do call :optdrv %%N || goto discard
+rem kit layout: every INF in ..\drivers (goyasdhc gives WinPE access to the card as a disk);
+rem otherwise each driver next to this script or in ..\drivers\<name>\out (GitHub Actions artifacts)
+set KITDRV=%HERE%..\drivers
+if not exist "%KITDRV%\goyasdhc.inf" goto perdriver
+echo   adding all drivers from "%KITDRV%"
+dism /Image:"%MNT%" /Add-Driver /Driver:"%KITDRV%" /Recurse /ForceUnsigned || goto discard
+goto drvdone
+:perdriver
+for %%N in (goyagpio goyai2c goyatouch goyakeys goyapinmux goyasdhc) do call :optdrv %%N || goto discard
+:drvdone
 
 if not exist "%MNT%\Windows\System32\startnet.cmd" > "%MNT%\Windows\System32\startnet.cmd" echo wpeinit
 >> "%MNT%\Windows\System32\startnet.cmd" echo for %%%%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if exist %%%%d:\goyape\autorun.cmd call %%%%d:\goyape\autorun.cmd
@@ -82,7 +93,7 @@ robocopy "%WORK%" %SD%\ /E /NFL /NDL /NJH /NP
 if errorlevel 8 (echo copy to card failed & exit /b 1)
 if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL /NDL /NJH /NP >nul
 echo.
-echo Done. Card in the tablet, then: fastboot boot goyawifi-uefi-winrt-release-boot.img
+echo Done. Card in the tablet, then boot the EDK2 firmware: goyawifi-uefi-winrt-release.img
 echo The EDK2 image to use is the "winrt" one (RTC set to 2012-08-01).
 exit /b 0
 

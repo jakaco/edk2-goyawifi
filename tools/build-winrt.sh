@@ -14,3 +14,6 @@ T=${1:-RELEASE}; set --
 rm -rf "$WORKSPACE"/Build/GoyaWifi/${T}_GCC/ARM/EmbeddedPkg/Library/VirtualRealTimeClockLib
 cd "${EDK2_PATH:-/home/claude/src/edk2}"; set +e; . ./edksetup.sh >/dev/null 2>&1; set -e
 cd "$WORKSPACE" && build -a ARM -t GCC -b "$T" -n 2 -p Platform/Samsung/GoyaWifiPkg/GoyaWifi.dsc
+# The epoch is baked into the library object and make does not notice a changed value:
+# remove it again so the next normal build gets the real build date.
+rm -rf "$WORKSPACE"/Build/GoyaWifi/${T}_GCC/ARM/EmbeddedPkg/Library/VirtualRealTimeClockLib
