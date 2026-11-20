@@ -66,6 +66,9 @@ typedef struct {
 #define   SDCLK_DELAY_SHIFT        9
 #define   SDCLK_DELAY_MASK         0x1F
 
+#define SD_PRESENT_STATE           0x24
+#define   PRESENT_CARD_INSERTED    BIT16
+
 #define SD_HOST_CTRL1              0x28
 #define   HOST_CTRL1_CD_TEST_LVL   BIT6
 #define   HOST_CTRL1_CD_SIG_SEL    BIT7
@@ -103,32 +106,86 @@ FindSdhci (
   return NULL;
 }
 
+STATIC
+BOOLEAN
+PxaSdCardPresent (
+  VOID
+  )
+{
+  return (MmioRead32 (GPIO_BANK (GOYAWIFI_SD_CD_GPIO) + GPIO_GPLR) &
+          (1U << (GOYAWIFI_SD_CD_GPIO % 32))) == 0;
+}
+
 /**
   The microSD card-detect line is a GPIO (11, active low) on goyawifi, not
   the controller CD pin, so feed its state to the controller through the
   "card detect test level" override in Host Control 1.
+
+  SdMmcPciHcDxe resets the slot (which clears Host Control 1) and then reads
+  PRESENT_STATE.CardInserted *before* it calls InitHostPre, so the override has
+  to be applied right after every reset (ResetPost), not only in InitHostPre.
+  Otherwise the slot is skipped with "No device attached".
 **/
 STATIC
 VOID
 PxaSdForceCardDetect (
-  IN PXA_SDHCI  *Host
+  IN PXA_SDHCI  *Host,
+  IN BOOLEAN    Settle
   )
 {
   UINT8    Ctrl;
+  UINT8    New;
   BOOLEAN  Present;
+  UINTN    Wait;
 
-  Present = (MmioRead32 (GPIO_BANK (GOYAWIFI_SD_CD_GPIO) + GPIO_GPLR) &
-             (1U << (GOYAWIFI_SD_CD_GPIO % 32))) == 0;
-
-  Ctrl  = MmioRead8 (Host->Base + SD_HOST_CTRL1);
-  Ctrl |= HOST_CTRL1_CD_SIG_SEL;
+  Present = PxaSdCardPresent ();
+  Ctrl    = MmioRead8 (Host->Base + SD_HOST_CTRL1);
+  New     = Ctrl | HOST_CTRL1_CD_SIG_SEL;
   if (Present) {
-    Ctrl |= HOST_CTRL1_CD_TEST_LVL;
+    New |= HOST_CTRL1_CD_TEST_LVL;
   } else {
-    Ctrl &= ~HOST_CTRL1_CD_TEST_LVL;
+    New &= ~HOST_CTRL1_CD_TEST_LVL;
   }
 
-  MmioWrite8 (Host->Base + SD_HOST_CTRL1, Ctrl);
+  if (New != Ctrl) {
+    MmioWrite8 (Host->Base + SD_HOST_CTRL1, New);
+  }
+
+  if (!Settle) {
+    return;
+  }
+
+  // PRESENT_STATE.CardInserted (bit 16) is debounced by the controller
+  for (Wait = 0; Wait < 50; Wait++) {
+    if (((MmioRead32 (Host->Base + SD_PRESENT_STATE) & PRESENT_CARD_INSERTED) != 0) == Present) {
+      break;
+    }
+
+    MicroSecondDelay (1000);
+  }
+
+  DEBUG ((
+    DEBUG_INFO,
+    "Pxa988Sdhci: microSD %a (GPIO11), PRESENT_STATE 0x%08x after %u ms\n",
+    Present ? "inserted" : "not inserted",
+    MmioRead32 (Host->Base + SD_PRESENT_STATE),
+    (UINT32)Wait
+    ));
+}
+
+/**
+  Hot-plug: keep the override in step with GPIO11 so that SdMmcPciHcDxe's
+  1 s enumeration timer sees insertions and removals after boot.
+**/
+STATIC
+VOID
+EFIAPI
+PxaSdCardDetectTimer (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  PxaSdForceCardDetect ((PXA_SDHCI *)Context, FALSE);
 }
 
 STATIC
@@ -194,12 +251,17 @@ PxaSdMmcNotifyPhase (
   switch (PhaseType) {
     case EdkiiSdMmcInitHostPre:
       if (!Host->IsEmmc) {
-        PxaSdForceCardDetect (Host);
+        PxaSdForceCardDetect (Host, FALSE);
       }
 
       break;
 
     case EdkiiSdMmcResetPost:
+      if (!Host->IsEmmc) {
+        PxaSdForceCardDetect (Host, TRUE);
+      }
+
+    // fall through
     case EdkiiSdMmcInitHostPost:
       if (Host->ClkDelayCycles != 0) {
         Val  = MmioRead16 (Host->Base + SD_CLOCK_BURST_SIZE_SETUP);
@@ -311,6 +373,7 @@ Pxa988SdhciInitialize (
 {
   EFI_STATUS  Status;
   EFI_HANDLE  Handle;
+  EFI_EVENT   Event;
   UINTN       Index;
 
   Pxa988SdhClockInit ();
@@ -334,6 +397,15 @@ Pxa988SdhciInitialize (
                PXA988_SDH_SIZE
                );
     DEBUG ((DEBUG_INFO, "Pxa988Sdhci: 0x%x: %r\n", mSdhci[Index].Base, Status));
+
+    if (!EFI_ERROR (Status) && !mSdhci[Index].IsEmmc) {
+      // Apply the override before SdMmcPciHcDxe looks at the slot at all
+      PxaSdForceCardDetect (&mSdhci[Index], TRUE);
+      Status = gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK, PxaSdCardDetectTimer, &mSdhci[Index], &Event);
+      if (!EFI_ERROR (Status)) {
+        gBS->SetTimer (Event, TimerPeriodic, 250 * 10000);   // 250 ms in 100 ns units
+      }
+    }
   }
 
   Handle = NULL;

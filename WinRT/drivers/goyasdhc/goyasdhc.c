@@ -44,7 +44,6 @@
 /* APMU SDH clock control (offsets inside the optional 0xD4282854 range) */
 #define APMU_SDH0_OFF     0x0
 #define APMU_SDH1_OFF     0x4
-#define SDH_CLK_ON        0x0813      /* RST_N | AXI_RST_N | FCLK_EN | FC, divider 0 bits added below */
 #define SDH_CLK_VALUE     (0x0013 | (7 << 8) | 0x0800)
 #define SDH_CLK_ACLK_EN   0x0008
 
@@ -89,15 +88,21 @@ typedef struct _GOYA_EXT {
     UCHAR    Sense[3];                  /* key, asc, ascq of the last error */
 } GOYA_EXT, *PGOYA_EXT;
 
+/* The microSD controller (0xD4280000, Linux "sdh1") is clocked by APMU_SDH0 (vendor DT:
+   assigned-clocks = PXA988_CLK_SDH0), which also holds the shared AXI clock enable. */
 static VOID GoyaClocks(PGOYA_EXT X)
 {
     ULONG v;
     if (!X->Apmu) return;
     v = StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF));
-    if (!(v & SDH_CLK_ACLK_EN))
-        StorPortWriteRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF), v | SDH_CLK_ACLK_EN | 0x0003);
+    if ((v & 0x0013) != 0x0013) {       /* off: same setting as the firmware (Pxa988SdhciDxe) */
+        StorPortWriteRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF), SDH_CLK_VALUE | SDH_CLK_ACLK_EN);
+        StorPortStallExecution(20);
+    } else if (!(v & SDH_CLK_ACLK_EN)) {
+        StorPortWriteRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF), v | SDH_CLK_ACLK_EN);
+    }
     v = StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH1_OFF));
-    if ((v & 0x0013) != 0x0013) {       /* firmware left SDH1 off: same setting as Pxa988SdhciDxe */
+    if ((v & 0x0013) != 0x0013) {
         StorPortWriteRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH1_OFF), SDH_CLK_VALUE);
         StorPortStallExecution(20);
     }
