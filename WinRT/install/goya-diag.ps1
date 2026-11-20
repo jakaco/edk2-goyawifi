@@ -7,8 +7,8 @@
     goya-diag.cmd <W:> verifier-off            remove Driver Verifier settings from the image
     goya-diag.cmd <W:> bootlog on|off          \Windows\ntbtlog.txt lists every driver loaded (last line = crash point)
     goya-diag.cmd <W:> minidump on             small crash dumps to \Windows\Minidump (needs a page file; set)
-    goya-diag.cmd <W:> disable <service>       Start=4 (e.g. goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
-    goya-diag.cmd <W:> enable <service>        back to the INF start type
+    goya-diag.cmd <W:> disable <service|all>   Start=4 (goyasdhc, goyatouch, goyakeys, goyai2c, goyagpio, goyapinmux)
+    goya-diag.cmd <W:> enable <service|all>    back to the INF start type
     goya-diag.cmd <W:> bsod-details            stop screen stays up (no auto restart) and shows the 4 parameters
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
     goya-diag.cmd <W:> halext-files            copy System32\HalExt*.dll, hal.dll, ntoskrnl.exe + versions to .\goya-halext-<time>
@@ -108,8 +108,8 @@ function Release-Bcd($b) {
 }
 
 $act = $Action.ToLower()
-if ($IsPE -and $act -in 'minidump', 'disable', 'enable') {
-    throw "'$Action' does not apply to a WinPE card (WinPE runs from RAM and installs no Goya services)"
+if ($IsPE -and $act -eq 'minidump') {
+    throw "'$Action' does not apply to a WinPE card (WinPE runs from RAM, there is no page file)"
 }
 if ($act -in $Changes -or $act -in 'info', 'halext-files') { Mount-PE }
 $ok = $false
@@ -206,15 +206,25 @@ switch ($act) {
         }
     }
     { $_ -in 'disable', 'enable' } {
-        if (-not $Arg -or -not $GoyaServices.Contains($Arg)) { throw "service must be one of: $($GoyaServices.Keys -join ', ')" }
-        if ($Arg -eq 'goyasdhc' -and $Action -eq 'disable') { throw 'goyasdhc is the boot disk driver: disabling it makes Windows unbootable' }
+        # 'all' = every Goya driver: for finding which one crashes (disable all, then enable one per boot)
+        $names = if ($Arg -eq 'all') { @($GoyaServices.Keys | Where-Object { $_ -ne 'mshidkmdf' }) } else { @($Arg) }
+        foreach ($n in $names) {
+            if (-not $n -or -not $GoyaServices.Contains($n)) { throw "service must be 'all' or one of: $($GoyaServices.Keys -join ', ')" }
+        }
+        # A WinPE card boots from boot.wim in RAM, so goyasdhc is not needed to boot it; a full install boots from it
+        if (-not $IsPE -and $Action -eq 'disable' -and $names -contains 'goyasdhc') {
+            if ($Arg -eq 'all') { $names = @($names | Where-Object { $_ -ne 'goyasdhc' }) }
+            else { throw 'goyasdhc is the boot disk driver of a full install: disabling it makes Windows unbootable' }
+        }
         With-SystemHive {
             param($cs)
-            $k = "$cs\Services\$Arg"
-            if (-not (Test-Path $k)) { throw "$Arg is not installed in this image yet" }
-            $start = if ($Action -eq 'disable') { 4 } else { $GoyaServices[$Arg] }
-            Set-ItemProperty $k -Name Start -Value $start -Type DWord
-            Write-Host "$Arg Start=$start"
+            foreach ($n in $names) {
+                $k = "$cs\Services\$n"
+                if (-not (Test-Path $k)) { Write-Host "$n is not installed in this image (skipped)"; continue }
+                $start = if ($Action -eq 'disable') { 4 } else { $GoyaServices[$n] }
+                Set-ItemProperty $k -Name Start -Value $start -Type DWord
+                Write-Host "$n Start=$start"
+            }
         }
     }
     'halext' {
