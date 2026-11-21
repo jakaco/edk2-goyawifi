@@ -399,12 +399,14 @@ static SD_STATUS SdXferOnce(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count
 /* Read/write with retries; on repeated failure drop speed and reinitialise the card. */
 static SD_STATUS SdTransfer(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count, PUCHAR buf)
 {
-    ULONG attempt, i;
+    ULONG attempt, i, initfail = 0;
     SD_STATUS st = SD_EPARAM;
 
     if (count == 0 || count > 0xFFFF || lba + count > c->Blocks) return SD_EPARAM;
     for (attempt = 0; attempt < 6; attempt++) {
-        if (!c->Ready && SdInitCard(c) != SD_OK) {
+        if (!c->Ready && (st = SdInitCard(c)) != SD_OK) {
+            c->FailIntSts = c->LastIntSts;
+            if (++initfail >= 2) break;               /* the caller may run at DISPATCH_LEVEL */
             if (c->SpeedLevel < 3) c->SpeedLevel++;
             continue;
         }

@@ -91,17 +91,17 @@ set RC=%errorlevel%
 reg unload HKLM\GOYAPE_SOFTWARE >nul
 if not "%RC%"=="0" goto discard
 :nocert
-rem Drivers put on a WinPE card. Default: goyatouch (HID mouse, drives its I2C bus itself) and goyakeys.
+rem Drivers put on a WinPE card. Default: goyatouch (mouse, drives its I2C bus itself), goyakeys and
+rem goyasdhc (the microSD card as a disk; GOYA_SDHC=0 leaves it out).
 rem Left out by default, each can be added back by setting the variable to 1 before running:
 rem   GOYA_PINMUX=1  goyapinmux - with it, Windows stopped intermittently (KMODE_EXCEPTION_NOT_HANDLED)
 rem   GOYA_I2C=1     goyai2c    - conflicts: goyatouch binds to the same I2C1 device and drives it
-rem   GOYA_SDHC=1    goyasdhc   - WinPE runs from RAM; under investigation
 rem   GOYA_GPIO=1    goyagpio   - the 8520 GPIO class extension stops Windows when it starts
 rem HalExtMmpTimer.inf is never added: the HAL extension entry is set directly below.
 set GOYA_DRVLIST=goyatouch goyakeys
 if "%GOYA_PINMUX%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyapinmux
 if "%GOYA_I2C%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyai2c
-if "%GOYA_SDHC%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyasdhc
+if not "%GOYA_SDHC%"=="0" set GOYA_DRVLIST=%GOYA_DRVLIST% goyasdhc
 if "%GOYA_GPIO%"=="1" set GOYA_DRVLIST=goyagpio %GOYA_DRVLIST%
 for %%N in (%GOYA_DRVLIST%) do call :optdrv %%N || goto discard
 :drvdone

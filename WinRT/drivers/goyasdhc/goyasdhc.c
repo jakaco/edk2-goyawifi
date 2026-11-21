@@ -10,7 +10,20 @@
  *   - card-detect override in Host Control 1 (the slot's detect line is GPIO 11, not the CD pin),
  *   - optional second memory range = APMU SDH0/SDH1 clock registers; the clock is re-enabled if the
  *     firmware left it off.
- * Requests are executed synchronously in HwStartIo (Storport serialises StartIo calls).
+ * Requests are executed synchronously in HwStartIo (Storport serialises StartIo calls). StartIo runs at
+ * DISPATCH_LEVEL, so a card that does not initialise is retried only a few times (then reported as
+ * not ready until a bus reset), never on every request: a dead card must not stall the system.
+ *
+ * On-screen status (id 1, same layout as common/goyatrace.h, which cannot be used with the Storport
+ * headers): top right "1 <stage>", below it four values:
+ *   stages  00 DriverEntry  01 FindAdapter  02 adapter found  0E no register range  03 HwInitialize
+ *           04 card init  05 card ready  0F card init failed  06 request after init
+ *   1 0  card: bits 31:28 speed level, 27 4-bit, 26 high speed, 25 SDHC/XC, 23:0 size in MB
+ *   1 1  requests: bits 31:24 last SCSI opcode, 23:16 failed requests, 15:0 requests
+ *   1 2  last error: bits 31:28 SD_STATUS, 27:0 SDHCI interrupt status of the failing command
+ *   1 3  StorPortInitialize status at load, then the SDHCI present-state register at card init
+ * Every Storport callback runs inside __try/__except: an exception becomes a red line at the top left
+ * (1, site, code, image offset, address) and a failed request instead of a stop.
  *
  * ACPI: \_SB.SDH1, HID MRVL0007, Memory32Fixed 0xD4280000/0x1000 [+ 0xD4282854/0x8], no interrupt.
  */
@@ -40,6 +53,87 @@
 #define SD_LOG(...)       StorPortDebugPrint(0, __VA_ARGS__)
 
 #include "sdcore.c"
+
+/* ---- on-screen trace ----------------------------------------------------------------------------- */
+#define GT_ID      1
+#define GT_FB_PHYS 0x17000000ULL
+#define GT_FB_W    1024
+#define GT_FB_H    600
+#define GT_SCALE   3
+
+__declspec(dllimport) PVOID MmMapIoSpace(PHYSICAL_ADDRESS PhysicalAddress, SIZE_T NumberOfBytes, ULONG CacheType);
+void *__cdecl _exception_info(void);
+extern UCHAR __ImageBase;
+
+static PULONG gFb;
+static LONG   gCaught;
+static const USHORT gGlyph[16] = {
+    0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7292,
+    0x7BEF, 0x7BCF, 0x2BED, 0x6BAE, 0x7927, 0x6B6E, 0x79E7, 0x79E4
+};
+
+static VOID TrRect(ULONG X, ULONG Y, ULONG W, ULONG H, ULONG Color)
+{
+    ULONG x, y;
+    for (y = Y; y < Y + H && y < GT_FB_H; y++)
+        for (x = X; x < X + W && x < GT_FB_W; x++)
+            gFb[y * GT_FB_W + x] = Color;
+}
+
+static ULONG TrHex(ULONG X, ULONG Y, ULONG Value, ULONG Digits, ULONG Fg, ULONG Bg)
+{
+    ULONG d, r, c;
+    TrRect(X, Y, Digits * 4 * GT_SCALE + GT_SCALE * 2, 5 * GT_SCALE, Bg);
+    for (d = 0; d < Digits; d++) {
+        USHORT g = gGlyph[(Value >> (4 * (Digits - 1 - d))) & 0xF];
+        for (r = 0; r < 5; r++)
+            for (c = 0; c < 3; c++)
+                if (g & (1u << (14 - (r * 3 + c))))
+                    TrRect(X + (d * 4 + c) * GT_SCALE, Y + r * GT_SCALE, GT_SCALE, GT_SCALE, Fg);
+    }
+    return X + Digits * 4 * GT_SCALE + GT_SCALE * 2;
+}
+
+static VOID TrStep(ULONG Site)
+{
+    ULONG x = GT_FB_W - 12 * 4 * GT_SCALE, y = 8;
+    if (!gFb) return;
+    x = TrHex(x, y, GT_ID, 1, 0x00FFFFFF, 0x00202020);
+    TrHex(x, y, Site, 2, 0x0000FF00, 0x00202020);
+}
+
+/* slots 0..3: rows 7..10 (rows 9/10 belong to goyapinmux, which is not on the card by default) */
+static VOID TrValue(ULONG Slot, ULONG Value)
+{
+    ULONG x = GT_FB_W - 12 * 4 * GT_SCALE, y = 8 + (7 + Slot) * 6 * GT_SCALE;
+    if (!gFb || Slot > 3) return;
+    x = TrHex(x, y, GT_ID, 1, 0x00FFFFFF, 0x00202020);
+    x = TrHex(x, y, Slot, 1, 0x00808080, 0x00202020);
+    TrHex(x, y, Value, 8, 0x0000FFFF, 0x00202020);
+}
+
+typedef struct { ULONG *Record; PVOID Context; } TR_EXPTRS;   /* EXCEPTION_POINTERS */
+
+static LONG TrFilter(PVOID Info, ULONG Site)
+{
+    TR_EXPTRS *e = (TR_EXPTRS *)Info;
+    ULONG code = 0, addr = 0, off, base = (ULONG)(ULONG_PTR)&__ImageBase;
+    if (e && e->Record) { code = e->Record[0]; addr = e->Record[3]; }   /* ExceptionCode, ExceptionAddress */
+    off = (addr >= base && addr - base < 0x100000) ? addr - base : 0xFFFFFFFF;
+    if (!gCaught && gFb) {
+        gCaught = 1;
+        ULONG x = 8, y = 8;
+        x = TrHex(x, y, GT_ID, 1, 0x00FFFFFF, 0x00800000);
+        x = TrHex(x, y, Site, 2, 0x00FFFFFF, 0x00800000);
+        x = TrHex(x, y, code, 8, 0x00FFFF00, 0x00800000);
+        x = TrHex(x, y, off, 8, 0x00FFFFFF, 0x00800000);
+        TrHex(x, y, addr, 8, 0x00C0C0C0, 0x00800000);
+    }
+    return 1;                                       /* EXCEPTION_EXECUTE_HANDLER */
+}
+
+#define TR_GUARD(Site, Body, OnException) \
+    do { __try { Body; } __except (TrFilter(_exception_info(), Site)) { OnException; } } while (0)
 
 /* APMU SDH clock control (offsets inside the optional 0xD4282854 range) */
 #define APMU_SDH0_OFF     0x0
@@ -86,6 +180,9 @@ typedef struct _GOYA_EXT {
     PUCHAR   Apmu;
     BOOLEAN  InitDone;
     UCHAR    Sense[3];                  /* key, asc, ascq of the last error */
+    ULONG    InitFails;                 /* consecutive failed card initialisations */
+    ULONG    Ios, Fails;
+    UCHAR    LastOp;
 } GOYA_EXT, *PGOYA_EXT;
 
 /* The microSD controller (0xD4280000, Linux "sdh1") is clocked by APMU_SDH0 (vendor DT:
@@ -108,20 +205,38 @@ static VOID GoyaClocks(PGOYA_EXT X)
     }
 }
 
+static VOID TrError(PGOYA_EXT X, ULONG St)
+{
+    TrValue(2, (St << 28) | (X->Sd.LastIntSts & 0x0FFFFFFF));
+}
+
 static BOOLEAN GoyaInitCard(PGOYA_EXT X)
 {
-    ULONG tries;
+    ULONG tries, st = SD_EPARAM;
+    TrStep(0x04);
     GoyaClocks(X);
-    for (tries = 0; tries < 4; tries++) {
-        if (SdInitCard(&X->Sd) == SD_OK) return TRUE;
+    for (tries = 0; tries < 3; tries++) {
+        st = SdInitCard(&X->Sd);
+        if (st == SD_OK) break;
         if (X->Sd.SpeedLevel < 3) X->Sd.SpeedLevel++;
     }
-    return FALSE;
+    TrValue(3, SD_RD32(&X->Sd, SDHC_PRESENT));
+    if (st != SD_OK) {
+        X->InitFails++;
+        TrError(X, st);
+        TrStep(0x0F);
+        return FALSE;
+    }
+    X->InitFails = 0;
+    TrValue(0, (X->Sd.SpeedLevel << 28) | (X->Sd.Wide ? 1UL << 27 : 0) | (X->Sd.HighSpeed ? 1UL << 26 : 0) |
+               (X->Sd.HighCap ? 1UL << 25 : 0) | ((ULONG)(X->Sd.Blocks >> 11) & 0x00FFFFFF));
+    TrStep(0x05);
+    return TRUE;
 }
 
 /* ---- Storport entry points ---- */
 
-static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Args,
+static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Args,
                              PPORT_CONFIGURATION_INFORMATION Cfg, PBOOLEAN Again)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
@@ -129,6 +244,7 @@ static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Ar
     UNREFERENCED_PARAMETER(HwContext); UNREFERENCED_PARAMETER(BusInfo);
     UNREFERENCED_PARAMETER(Args); UNREFERENCED_PARAMETER(Again);
 
+    TrStep(0x01);
     RtlZeroMemory(X, sizeof(*X));
     X->Sd.Os = X;
     for (i = 0; i < Cfg->NumberOfAccessRanges; i++) {
@@ -142,7 +258,7 @@ static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Ar
                 Cfg->SystemIoBusNumber, r->RangeStart, r->RangeLength, (BOOLEAN)!r->RangeInMemory);
         }
     }
-    if (!X->Sd.Regs) return SP_RETURN_BAD_CONFIG;
+    if (!X->Sd.Regs) { TrStep(0x0E); return SP_RETURN_BAD_CONFIG; }
 
     /* make sure a stale firmware setting can never raise an interrupt */
     SD_WR32(&X->Sd, SDHC_SIGEN, 0);
@@ -159,10 +275,11 @@ static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Ar
     Cfg->CachesData = FALSE;
     Cfg->MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
     Cfg->InitiatorBusId[0] = 7;
+    TrStep(0x02);
     return SP_RETURN_FOUND;
 }
 
-static BOOLEAN GoyaPassiveInit(PVOID Ext)
+static BOOLEAN GoyaPassiveInit_(PVOID Ext)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
     X->InitDone = TRUE;
@@ -170,9 +287,12 @@ static BOOLEAN GoyaPassiveInit(PVOID Ext)
     return TRUE;                        /* keep the adapter; I/O will retry the card init */
 }
 
-static BOOLEAN GoyaInitialize(PVOID Ext)
+static BOOLEAN GoyaPassiveInit(PVOID Ext);
+
+static BOOLEAN GoyaInitialize_(PVOID Ext)
 {
     /* Card init can take ~1 s: do it at PASSIVE_LEVEL when allowed (not in dump mode). */
+    TrStep(0x03);
     if (StorPortEnablePassiveInitialization(Ext, GoyaPassiveInit)) return TRUE;
     return GoyaPassiveInit(Ext);
 }
@@ -183,16 +303,17 @@ static BOOLEAN GoyaInterrupt(PVOID Ext)
     return FALSE;                       /* polled; signal enables are always 0 */
 }
 
-static BOOLEAN GoyaResetBus(PVOID Ext, ULONG PathId)
+static BOOLEAN GoyaResetBus_(PVOID Ext, ULONG PathId)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
     X->Sd.Ready = FALSE;
+    X->InitFails = 0;
     GoyaInitCard(X);
     StorPortCompleteRequest(Ext, (UCHAR)PathId, SP_UNTAGGED, SP_UNTAGGED, SRB_STATUS_BUS_RESET);
     return TRUE;
 }
 
-static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl(PVOID Ext, SCSI_ADAPTER_CONTROL_TYPE Type, PVOID Param)
+static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl_(PVOID Ext, SCSI_ADAPTER_CONTROL_TYPE Type, PVOID Param)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
     switch (Type) {
@@ -207,6 +328,7 @@ static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl(PVOID Ext, SCSI_ADAPTER_CO
         return ScsiAdapterControlSuccess;
     case ScsiRestartAdapter:            /* resume: the controller may have lost its state */
         X->Sd.Ready = FALSE;
+        X->InitFails = 0;
         GoyaInitCard(X);
         return ScsiAdapterControlSuccess;
     default:
@@ -253,9 +375,11 @@ static VOID ReturnData(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, const VOID *Data, U
 static ULONG Be32(const UCHAR *p) { return ((ULONG)p[0] << 24) | ((ULONG)p[1] << 16) | ((ULONG)p[2] << 8) | p[3]; }
 static VOID  PutBe32(PUCHAR p, ULONG v) { p[0] = (UCHAR)(v >> 24); p[1] = (UCHAR)(v >> 16); p[2] = (UCHAR)(v >> 8); p[3] = (UCHAR)v; }
 
+/* StartIo runs at DISPATCH_LEVEL: after 3 failed initialisations in a row the card is reported as not
+   ready without trying again, until a bus/device reset or a restart clears the count. */
 static BOOLEAN EnsureCard(PGOYA_EXT X)
 {
-    if (!X->Sd.Ready) GoyaInitCard(X);
+    if (!X->Sd.Ready && X->InitFails < 3) GoyaInitCard(X);
     return X->Sd.Ready;
 }
 
@@ -293,6 +417,8 @@ static VOID DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
         st = SdTransfer(&X->Sd, (BOOLEAN)!Write, lba, chunk, p);
         done += chunk;
         if (st != SD_OK) {
+            X->Sd.LastIntSts = X->Sd.FailIntSts;
+            TrError(X, st);
             SetSense(Srb, X, st == SD_ETIMEOUT || st == SD_ENOCARD ? KEY_HW_ERROR : KEY_MEDIUM_ERROR,
                      Write ? 0x0C : 0x11, 0);
             return;
@@ -399,7 +525,7 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
     }
 }
 
-static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
+static VOID GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
 
@@ -413,6 +539,7 @@ static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
     case SRB_FUNCTION_RESET_DEVICE:
     case SRB_FUNCTION_RESET_LOGICAL_UNIT:
         X->Sd.Ready = FALSE;
+        X->InitFails = 0;
         GoyaInitCard(X);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
@@ -427,6 +554,55 @@ static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         break;
     }
+}
+
+/* ---- guarded Storport callbacks ---- */
+
+static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Args,
+                             PPORT_CONFIGURATION_INFORMATION Cfg, PBOOLEAN Again)
+{
+    ULONG r = SP_RETURN_ERROR;
+    TR_GUARD(0x01, r = GoyaFindAdapter_(Ext, HwContext, BusInfo, Args, Cfg, Again), r = SP_RETURN_ERROR);
+    return r;
+}
+
+static BOOLEAN GoyaPassiveInit(PVOID Ext)
+{
+    BOOLEAN r = TRUE;
+    TR_GUARD(0x04, r = GoyaPassiveInit_(Ext), r = TRUE);
+    return r;
+}
+
+static BOOLEAN GoyaInitialize(PVOID Ext)
+{
+    BOOLEAN r = TRUE;
+    TR_GUARD(0x03, r = GoyaInitialize_(Ext), r = TRUE);
+    return r;
+}
+
+static BOOLEAN GoyaResetBus(PVOID Ext, ULONG PathId)
+{
+    BOOLEAN r = TRUE;
+    TR_GUARD(0x07, r = GoyaResetBus_(Ext, PathId), r = TRUE);
+    return r;
+}
+
+static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl(PVOID Ext, SCSI_ADAPTER_CONTROL_TYPE Type, PVOID Param)
+{
+    SCSI_ADAPTER_CONTROL_STATUS r = ScsiAdapterControlUnsuccessful;
+    TR_GUARD(0x08, r = GoyaAdapterControl_(Ext, Type, Param), r = ScsiAdapterControlUnsuccessful);
+    return r;
+}
+
+static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
+{
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
+    if (X->Ios == 0) TrStep(0x06);
+    X->Ios++;
+    X->LastOp = (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI) ? Srb->Cdb[0] : 0xFF;
+    TR_GUARD(0x06, GoyaStartIo_(Ext, Srb), Srb->SrbStatus = SRB_STATUS_ERROR);
+    if (SRB_STATUS(Srb->SrbStatus) != SRB_STATUS_SUCCESS) X->Fails++;
+    TrValue(1, ((ULONG)X->LastOp << 24) | ((X->Fails & 0xFF) << 16) | (X->Ios & 0xFFFF));
     StorPortNotification(RequestComplete, Ext, Srb);
     return TRUE;
 }
@@ -436,6 +612,11 @@ ULONG DriverEntry(PVOID DriverObject, PVOID RegistryPath)
     static const INTERFACE_TYPE types[] = { Internal, ACPIBus, PNPBus, Isa };
     HW_INITIALIZATION_DATA h;
     ULONG i, st, best = 0xC0000001UL;   /* STATUS_UNSUCCESSFUL */
+    PHYSICAL_ADDRESS fb;
+
+    fb.QuadPart = GT_FB_PHYS;
+    gFb = (PULONG)MmMapIoSpace(fb, GT_FB_W * GT_FB_H * 4, 0 /* MmNonCached */);
+    TrStep(0x00);
 
     /* The ACPI PDO's legacy bus type is not documented for ARM; register for every likely one. */
     for (i = 0; i < GOYA_COUNT(types); i++) {
@@ -460,5 +641,6 @@ ULONG DriverEntry(PVOID DriverObject, PVOID RegistryPath)
         st = StorPortInitialize(DriverObject, RegistryPath, &h, NULL);
         if (st == 0 || best != 0) best = st;
     }
+    TrValue(3, best);
     return best;
 }
