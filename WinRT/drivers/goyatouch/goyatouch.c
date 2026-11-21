@@ -93,6 +93,7 @@
 #define Z_X_RES          0x00c0
 #define Z_Y_RES          0x00c1
 #define Z_INT_ENABLE     0x00f0
+#define Z_ICON_STATUS    0x00aa
 #define Z_VENDOR_ENABLE  0xc000
 #define Z_PROGRAM_START  0xc001
 #define Z_NVM_INIT       0xc002
@@ -105,6 +106,17 @@
 #define BIT_UP            (1u << 3)
 #define BIT_PT_EXIST      (1u << 11)
 #define BIT_MUST_ZERO     (1u << 13)
+#define BIT_ICON_EVENT    (1u << 15)
+#define Z_BUTTONS         4        /* DT linux,keycodes: 4 entries (menu/back touch keys) */
+
+/* touch interrupt line TSP_INT = GPIO94 (bank 2 bit 30), active low; used as "data ready" when polling */
+#define GPIO_PHYS        0xD4019000ULL
+#define GPIO94_BANK      0x008
+#define GPIO94_BIT       (1UL << 30)
+#define GPIO_GPLR        0x00
+#define GPIO_GPDR        0x0C
+#define GPIO_GCDR        0x60
+#define MFPR_GPIO94_PHYS 0xD401E224ULL
 #define SUB_BIT_EXIST     0x01
 #define Z_RETRIES 8
 
@@ -129,6 +141,19 @@ typedef struct _DEV_EXT {
 /* status shown by the heartbeat thread */
 static volatile ULONG gStage, gInit = 0xFFFFFFFF, gInfo, gChip, gReports;
 static volatile ULONG gLastStatus, gLastSub, gReadFails, gNonZero, gRejected;
+static volatile ULONG gPolls, gRaw4, gReadback, gIntInfo, gIntLow;
+static PUCHAR gGpio;                 /* mapped GPIO block (read-only use + GCDR) */
+
+/* extra status lines below all drivers' values: "5 <n> <value>", n = 2.. */
+static VOID TraceExtra(ULONG N, ULONG Value)
+{
+    PULONG fb = GtFb();
+    ULONG y = 8 + (7 + 6 * 2 + 2 + (N - 2)) * 6 * GT_SCALE, x = GT_FB_W - 12 * 4 * GT_SCALE;
+    if (fb == NULL) return;
+    x = GtHex(fb, x, y, GOYA_TRACE_ID, 1, 0x00FFFFFF, 0x00202020);
+    x = GtHex(fb, x, y, N, 1, 0x00808080, 0x00202020);
+    GtHex(fb, x, y, Value, 8, 0x0000FFFF, 0x00202020);
+}
 static BOOLEAN gChipOk;
 static KEVENT gHbStop;
 static PKTHREAD gHbThread;
@@ -150,6 +175,19 @@ static VOID HeartbeatThread(PVOID Context)
             GoyaTraceValue(0, (gInit != 0) ? gInit : ((gLastStatus << 16) | ((gReadFails & 0xFF) << 8) | (gLastSub & 0xFF)));
             GoyaTraceValue(1, ((gNonZero & 0xFFFF) << 16) | ((gRejected & 0xF) << 12) | (gReports & 0xFFF));
         }
+        /* 5 2: polls done | 5 3: INT_ENABLE readback (high) TOUCH_MODE readback (low) |
+           5 4: GPIO94 MFPR (high 16) | direction (bit 4, 1 = output) | level now (bit 0) | 5 5: first 4 raw bytes
+           of the last point-status read | 5 6: polls that saw the interrupt line low */
+        TraceExtra(2, gPolls);
+        TraceExtra(3, gReadback);
+        if (gGpio != NULL) {
+            ULONG lvl = READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR));
+            ULONG dir = READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPDR));
+            gIntInfo = (gIntInfo & 0xFFFF0000) | ((dir & GPIO94_BIT) ? 0x10 : 0) | ((lvl & GPIO94_BIT) ? 1 : 0);
+        }
+        TraceExtra(4, gIntInfo);
+        TraceExtra(5, gRaw4);
+        TraceExtra(6, gIntLow);
     } while (KeWaitForSingleObject(&gHbStop, Executive, KernelMode, FALSE, &t) == STATUS_TIMEOUT);
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
@@ -347,15 +385,22 @@ static NTSTATUS ZInitChip(DEV_EXT *E)
     CHK(ZWriteU16(E, Z_INT_ENABLE, 0));
     CHK(ZCmd(E, Z_SWRESET));
     SleepMs(15);
-    CHK(ZWriteU16(E, Z_X_RES, RAW_MAX_X));
-    CHK(ZWriteU16(E, Z_Y_RES, RAW_MAX_Y));
-    CHK(ZWriteU16(E, Z_BUTTON_NUM, 0));
+    /* exactly what the vendor driver writes: touchscreen-size 600 x 1024 -> max 599 / 1023, 4 keys */
+    CHK(ZWriteU16(E, Z_X_RES, RAW_MAX_X - 1));
+    CHK(ZWriteU16(E, Z_Y_RES, RAW_MAX_Y - 1));
+    CHK(ZWriteU16(E, Z_BUTTON_NUM, Z_BUTTONS));
     CHK(ZWriteU16(E, Z_FINGER_NUM, NFINGERS));
     CHK(ZWriteU16(E, Z_INIT_MODE, 0));
     CHK(ZWriteU16(E, Z_TOUCH_MODE, 0));
     CHK(ZCmd(E, Z_CALIBRATE));
-    CHK(ZWriteU16(E, Z_INT_ENABLE, BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP));
+    CHK(ZWriteU16(E, Z_INT_ENABLE, BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP | BIT_ICON_EVENT));
     for (i = 0; i < 10; i++) { ZCmd(E, Z_CLEAR_INT); KeStallExecutionProcessor(15); }
+    {
+        USHORT ie = 0, tm = 0;
+        ZReadU16(E, Z_INT_ENABLE, &ie);
+        ZReadU16(E, Z_TOUCH_MODE, &tm);
+        gReadback = ((ULONG)ie << 16) | tm;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -392,27 +437,34 @@ static VOID PollOnce(DEV_EXT *E)
     LONG x = E->LastX, y = E->LastY;
     int i;
 
+    gPolls++;
+    if (gGpio != NULL && !(READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR)) & GPIO94_BIT)) gIntLow++;
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
         gReadFails++;
         E->Initialized = FALSE;                             /* chip lost: re-initialise */
         return;
     }
     status = (USHORT)(raw[0] | (raw[1] << 8));
+    gRaw4 = ((ULONG)raw[0] << 24) | ((ULONG)raw[1] << 16) | ((ULONG)raw[2] << 8) | raw[3];
     if (status == 0) return;                                /* nothing new */
     gNonZero++;
     gLastStatus = status;
     gLastSub = raw[4 + 5];
     if (status == 0xFFFF || (status & BIT_MUST_ZERO)) { ZCmd(E, Z_CLEAR_INT); return; }
+    if (status & BIT_ICON_EVENT) {                          /* touch keys: read (and ignore) like the vendor driver */
+        USHORT icon;
+        ZReadU16(E, Z_ICON_STATUS, &icon);
+    }
 
     if (status & BIT_PT_EXIST) {
         for (i = 0; i < NFINGERS; i++) {
             const UCHAR *p = raw + 4 + i * 6;               /* x(2) y(2) width sub_status */
             LONG rx = (LONG)(p[0] | (p[1] << 8)), ry = (LONG)(p[2] | (p[3] << 8));
             if (!(p[5] & SUB_BIT_EXIST)) continue;
-            if (rx > RAW_MAX_X || ry > RAW_MAX_Y) { gRejected++; continue; }
+            if (rx > RAW_MAX_X - 1 || ry > RAW_MAX_Y - 1) { gRejected++; continue; }
             /* DT inverted-x, swapped-x-y: screen x = raw y, screen y = max - raw x; 0..65535 */
-            x = ry * 65535 / RAW_MAX_Y;
-            y = (RAW_MAX_X - rx) * 65535 / RAW_MAX_X;
+            x = ry * 65535 / (RAW_MAX_Y - 1);
+            y = (RAW_MAX_X - 1 - rx) * 65535 / (RAW_MAX_X - 1);
             down = TRUE;
             break;
         }
@@ -522,6 +574,26 @@ static VOID SetTwsi1Pins(VOID)
     MmUnmapIoSpace(m, 8);
 }
 
+/* TSP_INT (GPIO94): GPIO function (AF0, as the DT touch_pins) and input, so the chip can drive it */
+static VOID SetIntPin(VOID)
+{
+    PHYSICAL_ADDRESS pa;
+    PULONG m;
+    if (gGpio == NULL) {
+        pa.QuadPart = GPIO_PHYS;
+        gGpio = (PUCHAR)MmMapIoSpace(pa, 0x200, MmNonCached);
+    }
+    pa.QuadPart = MFPR_GPIO94_PHYS;
+    m = (PULONG)MmMapIoSpace(pa, 4, MmNonCached);
+    if (m != NULL) {
+        ULONG v = READ_REGISTER_ULONG(m);
+        gIntInfo = v << 16;                                  /* MFPR as found */
+        if ((v & 7) != 0) WRITE_REGISTER_ULONG(m, v & ~7UL);
+        MmUnmapIoSpace(m, 4);
+    }
+    if (gGpio != NULL) WRITE_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GCDR), GPIO94_BIT);
+}
+
 static NTSTATUS StartDevice(DEV_EXT *E)
 {
     PHYSICAL_ADDRESS pa;
@@ -529,6 +601,7 @@ static NTSTATUS StartDevice(DEV_EXT *E)
     NTSTATUS st;
 
     GT_GUARD(0x03, SetTwsi1Pins(), (VOID)0);
+    GT_GUARD(0x04, SetIntPin(), (VOID)0);
 
     pa.QuadPart = TWSI1_PHYS;
     E->Twsi = (PUCHAR)MmMapIoSpace(pa, TWSI1_LEN, MmNonCached);
