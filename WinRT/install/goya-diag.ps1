@@ -11,6 +11,7 @@
     goya-diag.cmd <W:> enable <service|all>    back to the INF start type
     goya-diag.cmd <W:> only <service>          enable just this Goya driver, disable the others (WinPE: goyasdhc too)
     goya-diag.cmd <W:> bsod-details            stop screen stays up (no auto restart) and shows the 4 parameters
+    goya-diag.cmd <W:> win-files               copy the image's GpioClx/SpbCx/KMDF/Storport/HID drivers into a zip
     goya-diag.cmd <W:> halext off|on           experiment: boot without / with HalExtMmpTimer (OSEDB entry)
     goya-diag.cmd <W:> halext-files            copy System32\HalExt*.dll, hal.dll, ntoskrnl.exe + versions to .\goya-halext-<time>
     goya-diag.cmd <W:> halext-install <dll>    put a (signed) HalExtMmpTimer.dll into System32 and register it
@@ -112,7 +113,7 @@ $act = $Action.ToLower()
 if ($IsPE -and $act -eq 'minidump') {
     throw "'$Action' does not apply to a WinPE card (WinPE runs from RAM, there is no page file)"
 }
-if ($act -in $Changes -or $act -in 'info', 'halext-files') { Mount-PE }
+if ($act -in $Changes -or $act -in 'info', 'halext-files', 'win-files') { Mount-PE }
 $ok = $false
 try {
 switch ($act) {
@@ -261,6 +262,25 @@ switch ($act) {
             }
         }
     }
+    'win-files' {
+        # The Windows driver frameworks our drivers plug into, from THIS image (8520 is pre-release:
+        # its GpioClx/SpbCx/KMDF/Storport may differ from the final Windows 8 ones the drivers target)
+        $out = Join-Path (Get-Location) ("goya-winfiles-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        New-Item -ItemType Directory $out | Out-Null
+        $drv = "$Root\Windows\System32\drivers"
+        $names = 'msgpioclx.sys', 'gpioclx0100.sys', 'spbcx.sys', 'wdfldr.sys', 'wdf01000.sys', 'storport.sys',
+                 'mshidkmdf.sys', 'hidclass.sys', 'hidparse.sys', 'acpi.sys', 'acpiex.sys', 'disk.sys', 'classpnp.sys'
+        $info = foreach ($n in $names) {
+            $f = Join-Path $drv $n
+            if (Test-Path $f) { Copy-Item $f $out; $i = Get-Item $f; "{0,-16} {1,9} bytes  {2}" -f $i.Name, $i.Length, $i.VersionInfo.FileVersion }
+            else { "{0,-16} not in this image" -f $n }
+        }
+        $info | Set-Content (Join-Path $out 'versions.txt')
+        $info | ForEach-Object { Write-Host $_ }
+        $zip = "$out.zip"
+        Compress-Archive -Path "$out\*" -DestinationPath $zip -Force
+        Write-Host "send this file: $zip"
+    }
     'halext-files' {
         $out = Join-Path (Get-Location) ("goya-halext-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
         New-Item -ItemType Directory $out | Out-Null
@@ -291,9 +311,9 @@ switch ($act) {
         }
         Write-Host "installed $Arg (signed by $($sig.SignerCertificate.Subject)) and registered HalExtMmpTimer.dll"
     }
-    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on, halext-files, halext-install <dll>)" }
+    default { throw "unknown action '$Action' (info, collect, verifier-off, bootlog on|off, minidump on, disable|enable <service>, halext off|on, halext-files, halext-install <dll>, win-files, only <service>, bsod-details)" }
 }
 $ok = $true
 } finally {
-    if ($IsPE -and ($act -in $Changes -or $act -in 'info', 'halext-files')) { Dismount-PE ($ok -and ($act -in $Changes)) }
+    if ($IsPE -and ($act -in $Changes -or $act -in 'info', 'halext-files', 'win-files')) { Dismount-PE ($ok -and ($act -in $Changes)) }
 }

@@ -148,7 +148,7 @@ static NTSTATUS GoyaQueryControllerBasicInformation(PVOID Context, PCLIENT_CONTR
     Info->Flags.BankIdlePowerMgmtSupported = FALSE;
     Info->Flags.EmulateDebouncing = TRUE;
     Info->Flags.EmulateActiveBoth = FALSE;      /* handled natively: GRER and GFER both set */
-    Info->Flags.IndependentIoHwSupported = TRUE;
+    /* IndependentIoHwSupported (bit 7) is a Windows 10 flag; bit 7 is Reserved in the 8.0 header */
     return STATUS_SUCCESS;
 }
 
