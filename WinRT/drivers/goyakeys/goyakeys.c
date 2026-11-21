@@ -16,6 +16,7 @@
 
    ACPI (see Dsdt.asl KEY0): HID MRVL0006.
 */
+#define GOYA_TRACE_ID 6
 #include "..\common\hidmini.h"
 #include "..\common\spbtarget.h"
 
@@ -118,7 +119,7 @@ static VOID SendChanges(PGOYA_KEYS K, ULONG now)
     K->Reported = now;
 }
 
-static VOID OnTimer(WDFTIMER Timer)
+static VOID OnTimer_(WDFTIMER Timer)
 {
     WDFDEVICE dev = (WDFDEVICE)WdfTimerGetParentObject(Timer);
     PGOYA_KEYS K = GetKeys(dev);
@@ -135,7 +136,12 @@ static VOID OnTimer(WDFTIMER Timer)
     if (K->Running) WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(16));
 }
 
-static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
+static VOID OnTimer(WDFTIMER Timer)
+{
+    GT_GUARD(0x01, OnTimer_(Timer), ;);
+}
+
+static NTSTATUS OnPrepareHardware_(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
 {
     PGOYA_KEYS K = GetKeys(Device);
     PHYSICAL_ADDRESS pa;
@@ -148,7 +154,14 @@ static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLI
     return K->Gpio ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
 }
 
-static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
+static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x02, r_ = OnPrepareHardware_(Device, Raw, Translated), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS OnReleaseHardware_(WDFDEVICE Device, WDFCMRESLIST Translated)
 {
     PGOYA_KEYS K = GetKeys(Device);
     UNREFERENCED_PARAMETER(Translated);
@@ -157,7 +170,14 @@ static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
+static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
+{
+    NTSTATUS r_ = STATUS_SUCCESS;
+    GT_GUARD(0x03, r_ = OnReleaseHardware_(Device, Translated), r_ = STATUS_SUCCESS);
+    return r_;
+}
+
+static NTSTATUS OnD0Entry_(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
 {
     PGOYA_KEYS K = GetKeys(Device);
     UNREFERENCED_PARAMETER(Prev);
@@ -167,7 +187,14 @@ static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
+static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x04, r_ = OnD0Entry_(Device, Prev), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS OnD0Exit_(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
 {
     PGOYA_KEYS K = GetKeys(Device);
     UNREFERENCED_PARAMETER(Target);
@@ -176,7 +203,14 @@ static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
+static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
+{
+    NTSTATUS r_ = STATUS_SUCCESS;
+    GT_GUARD(0x05, r_ = OnD0Exit_(Device, Target), r_ = STATUS_SUCCESS);
+    return r_;
+}
+
+static NTSTATUS OnDeviceAdd_(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
 {
     NTSTATUS st;
     WDF_PNPPOWER_EVENT_CALLBACKS pnp;
@@ -222,10 +256,24 @@ static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     return WdfTimerCreate(&tc, &a, &K->Timer);
 }
 
-NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x06, r_ = OnDeviceAdd_(Driver, Init), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS DriverEntry_(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     WDF_DRIVER_CONFIG cfg;
     WDF_DRIVER_CONFIG_INIT(&cfg, OnDeviceAdd);
     cfg.DriverPoolTag = GK_TAG;
     return WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &cfg, WDF_NO_HANDLE);
+}
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x00, r_ = DriverEntry_(DriverObject, RegistryPath), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
 }

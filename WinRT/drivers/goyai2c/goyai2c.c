@@ -13,8 +13,10 @@
      2. Memory (optional, 4 bytes): the APBC clock register of this TWSI (e.g. 0xD4015060), so the driver
         can make sure clock + reset are right. If absent, the clock is left as the firmware set it.
 */
+#define GOYA_TRACE_ID 4
 #include <ntddk.h>
 #include <wdf.h>
+#include "..\common\goyatrace.h"
 #include <spb.h>
 #include <spbcx.h>
 #include <reshub.h>
@@ -211,7 +213,7 @@ static NTSTATUS I2cTransfer(PGOYA_I2C I, UCHAR Addr7, BOOLEAN Read, PMDL Mdl, si
 
 /* ---- SpbCx callbacks --------------------------------------------------------------- */
 
-static NTSTATUS OnTargetConnect(WDFDEVICE Controller, SPBTARGET Target)
+static NTSTATUS OnTargetConnect_(WDFDEVICE Controller, SPBTARGET Target)
 {
     SPB_CONNECTION_PARAMETERS params;
     RH_QUERY_CONNECTION_PROPERTIES_OUTPUT_BUFFER *conn;
@@ -238,6 +240,13 @@ static NTSTATUS OnTargetConnect(WDFDEVICE Controller, SPBTARGET Target)
     t->Address = d->SlaveAddress;
     t->Speed = d->ConnectionSpeed;
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS OnTargetConnect(WDFDEVICE Controller, SPBTARGET Target)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x01, r_ = OnTargetConnect_(Controller, Target), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
 }
 
 static VOID Finish(SPBREQUEST Request, NTSTATUS Status, size_t Info)
@@ -292,26 +301,41 @@ static VOID RunRequest(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Reques
     Finish(Request, st, total);
 }
 
-static VOID OnRead(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, size_t Length)
+static VOID OnRead_(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, size_t Length)
 {
     UNREFERENCED_PARAMETER(Length);
     RunRequest(Controller, Target, Request, 1, FALSE, TRUE);
 }
 
-static VOID OnWrite(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, size_t Length)
+static VOID OnRead(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, size_t Length)
+{
+    GT_GUARD(0x02, OnRead_(Controller, Target, Request, Length), ;);
+}
+
+static VOID OnWrite_(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, size_t Length)
 {
     UNREFERENCED_PARAMETER(Length);
     RunRequest(Controller, Target, Request, 1, FALSE, FALSE);
 }
 
-static VOID OnSequence(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, ULONG TransferCount)
+static VOID OnWrite(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, size_t Length)
+{
+    GT_GUARD(0x03, OnWrite_(Controller, Target, Request, Length), ;);
+}
+
+static VOID OnSequence_(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, ULONG TransferCount)
 {
     RunRequest(Controller, Target, Request, TransferCount, TRUE, FALSE);
 }
 
+static VOID OnSequence(WDFDEVICE Controller, SPBTARGET Target, SPBREQUEST Request, ULONG TransferCount)
+{
+    GT_GUARD(0x04, OnSequence_(Controller, Target, Request, TransferCount), ;);
+}
+
 /* ---- PnP / power ------------------------------------------------------------------- */
 
-static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
+static NTSTATUS OnPrepareHardware_(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
 {
     PGOYA_I2C I = GetI2c(Device);
     ULONG count = WdfCmResourceListGetCount(Translated), n = 0, i;
@@ -332,7 +356,14 @@ static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLI
     return I->Regs ? STATUS_SUCCESS : STATUS_DEVICE_CONFIGURATION_ERROR;
 }
 
-static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
+static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x05, r_ = OnPrepareHardware_(Device, Raw, Translated), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS OnReleaseHardware_(WDFDEVICE Device, WDFCMRESLIST Translated)
 {
     PGOYA_I2C I = GetI2c(Device);
     UNREFERENCED_PARAMETER(Translated);
@@ -341,7 +372,14 @@ static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
+static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
+{
+    NTSTATUS r_ = STATUS_SUCCESS;
+    GT_GUARD(0x06, r_ = OnReleaseHardware_(Device, Translated), r_ = STATUS_SUCCESS);
+    return r_;
+}
+
+static NTSTATUS OnD0Entry_(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
 {
     PGOYA_I2C I = GetI2c(Device);
     UNREFERENCED_PARAMETER(Prev);
@@ -350,7 +388,14 @@ static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
+static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x07, r_ = OnD0Entry_(Device, Prev), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS OnD0Exit_(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
 {
     PGOYA_I2C I = GetI2c(Device);
     UNREFERENCED_PARAMETER(Target);
@@ -358,7 +403,14 @@ static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
+static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
+{
+    NTSTATUS r_ = STATUS_SUCCESS;
+    GT_GUARD(0x08, r_ = OnD0Exit_(Device, Target), r_ = STATUS_SUCCESS);
+    return r_;
+}
+
+static NTSTATUS OnDeviceAdd_(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
 {
     NTSTATUS status;
     WDF_PNPPOWER_EVENT_CALLBACKS pnp;
@@ -407,10 +459,24 @@ static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     return STATUS_SUCCESS;
 }
 
-NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x09, r_ = OnDeviceAdd_(Driver, Init), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS DriverEntry_(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     WDF_DRIVER_CONFIG cfg;
     WDF_DRIVER_CONFIG_INIT(&cfg, OnDeviceAdd);
     cfg.DriverPoolTag = GOYA_I2C_TAG;
     return WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &cfg, WDF_NO_HANDLE);
+}
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x00, r_ = DriverEntry_(DriverObject, RegistryPath), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
 }

@@ -10,6 +10,7 @@
 #include <ntddk.h>
 #include <wdf.h>
 #include <hidport.h>
+#include "goyatrace.h"
 
 #define HIDMINI_RING 8
 #define HIDMINI_MAX_REPORT 40
@@ -85,7 +86,7 @@ static VOID HidMiniReport(WDFDEVICE Device, const UCHAR *Report, ULONG Len)
     HidMiniDeliver(Device);
 }
 
-static VOID HidMiniIoInternal(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen, ULONG Code)
+static VOID HidMiniIoInternal_(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen, ULONG Code)
 {
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
     PHIDMINI_CTX c = HidMiniCtx(device);
@@ -173,6 +174,12 @@ static VOID HidMiniIoInternal(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen,
         break;
     }
     WdfRequestCompleteWithInformation(Request, st, info);
+}
+
+/* Guarded: an exception leaves the request pending (it may already have been completed) */
+static VOID HidMiniIoInternal(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen, ULONG Code)
+{
+    GT_GUARD(0x20 + (Code >> 2 & 0x1F), HidMiniIoInternal_(Queue, Request, OutLen, InLen, Code), ;);
 }
 
 /* Call from EvtDriverDeviceAdd after WdfFdoInitSetFilter + WdfDeviceCreate. */

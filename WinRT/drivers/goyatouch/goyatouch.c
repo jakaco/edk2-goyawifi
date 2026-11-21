@@ -11,6 +11,7 @@
 
    ACPI (see Dsdt.asl TCH0): HID MRVL0005 with I2cSerialBus(0x20, 400 kHz, "\_SB.I2C1").
 */
+#define GOYA_TRACE_ID 5
 #include "..\common\hidmini.h"
 #include "..\common\spbtarget.h"
 
@@ -262,7 +263,7 @@ static VOID PollOnce(PGOYA_TOUCH T)
     ZCmd(T, Z_CLEAR_INT);
 }
 
-static VOID OnTimer(WDFTIMER Timer)
+static VOID OnTimer_(WDFTIMER Timer)
 {
     WDFDEVICE dev = (WDFDEVICE)WdfTimerGetParentObject(Timer);
     PGOYA_TOUCH T = GetTouch(dev);
@@ -283,9 +284,14 @@ static VOID OnTimer(WDFTIMER Timer)
     if (T->Running) WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(16));
 }
 
+static VOID OnTimer(WDFTIMER Timer)
+{
+    GT_GUARD(0x01, OnTimer_(Timer), ;);
+}
+
 /* ---- HID feature reports ---------------------------------------------------------- */
 
-static NTSTATUS OnGetFeature(PVOID Ctx, UCHAR ReportId, PUCHAR Buf, ULONG Len, PULONG Written)
+static NTSTATUS OnGetFeature_(PVOID Ctx, UCHAR ReportId, PUCHAR Buf, ULONG Len, PULONG Written)
 {
     UNREFERENCED_PARAMETER(Ctx);
     if (ReportId == 2 && Len >= 2) {
@@ -297,9 +303,16 @@ static NTSTATUS OnGetFeature(PVOID Ctx, UCHAR ReportId, PUCHAR Buf, ULONG Len, P
     return STATUS_NOT_SUPPORTED;
 }
 
+static NTSTATUS OnGetFeature(PVOID Ctx, UCHAR ReportId, PUCHAR Buf, ULONG Len, PULONG Written)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x07, r_ = OnGetFeature_(Ctx, ReportId, Buf, Len, Written), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
 /* ---- PnP / power -------------------------------------------------------------------- */
 
-static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
+static NTSTATUS OnPrepareHardware_(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
 {
     PGOYA_TOUCH T = GetTouch(Device);
     UNREFERENCED_PARAMETER(Raw);
@@ -310,7 +323,14 @@ static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLI
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
+static NTSTATUS OnPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x02, r_ = OnPrepareHardware_(Device, Raw, Translated), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS OnReleaseHardware_(WDFDEVICE Device, WDFCMRESLIST Translated)
 {
     PGOYA_TOUCH T = GetTouch(Device);
     UNREFERENCED_PARAMETER(Translated);
@@ -318,7 +338,14 @@ static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
+static NTSTATUS OnReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
+{
+    NTSTATUS r_ = STATUS_SUCCESS;
+    GT_GUARD(0x03, r_ = OnReleaseHardware_(Device, Translated), r_ = STATUS_SUCCESS);
+    return r_;
+}
+
+static NTSTATUS OnD0Entry_(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
 {
     PGOYA_TOUCH T = GetTouch(Device);
     UNREFERENCED_PARAMETER(Prev);
@@ -330,7 +357,14 @@ static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
+static NTSTATUS OnD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Prev)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x04, r_ = OnD0Entry_(Device, Prev), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS OnD0Exit_(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
 {
     PGOYA_TOUCH T = GetTouch(Device);
     UNREFERENCED_PARAMETER(Target);
@@ -343,7 +377,14 @@ static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
+static NTSTATUS OnD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
+{
+    NTSTATUS r_ = STATUS_SUCCESS;
+    GT_GUARD(0x05, r_ = OnD0Exit_(Device, Target), r_ = STATUS_SUCCESS);
+    return r_;
+}
+
+static NTSTATUS OnDeviceAdd_(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
 {
     NTSTATUS st;
     WDF_PNPPOWER_EVENT_CALLBACKS pnp;
@@ -391,10 +432,24 @@ static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     return WdfTimerCreate(&tc, &a, &T->Timer);
 }
 
-NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+static NTSTATUS OnDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x06, r_ = OnDeviceAdd_(Driver, Init), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
+}
+
+static NTSTATUS DriverEntry_(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     WDF_DRIVER_CONFIG cfg;
     WDF_DRIVER_CONFIG_INIT(&cfg, OnDeviceAdd);
     cfg.DriverPoolTag = GT_TAG;
     return WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &cfg, WDF_NO_HANDLE);
+}
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+{
+    NTSTATUS r_ = STATUS_UNSUCCESSFUL;
+    GT_GUARD(0x00, r_ = DriverEntry_(DriverObject, RegistryPath), r_ = STATUS_UNSUCCESSFUL);
+    return r_;
 }
