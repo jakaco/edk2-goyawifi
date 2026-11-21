@@ -91,7 +91,6 @@ static VOID HidMiniIoInternal(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen,
     PHIDMINI_CTX c = HidMiniCtx(device);
     NTSTATUS st = STATUS_NOT_SUPPORTED;
     size_t info = 0;
-    UNREFERENCED_PARAMETER(InLen);
 
     switch (Code) {
     case IOCTL_HID_GET_DEVICE_DESCRIPTOR: {
@@ -137,25 +136,29 @@ static VOID HidMiniIoInternal(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen,
         if (NT_SUCCESS(st)) { HidMiniDeliver(device); return; }
         break;
     case IOCTL_HID_GET_FEATURE: {
-        /* mshidkmdf does NOT pass a HID_XFER_PACKET: it converts it into an input buffer holding the
-           report ID and an output buffer for the report (as in the WDK vhidmini2 sample). Reading
-           Irp->UserBuffer as a HID_XFER_PACKET took report bytes as a pointer and wrote through it. */
-        WDFMEMORY inMem, outMem;
-        size_t inLen = 0, outLen = 0;
-        PUCHAR inBuf, outBuf;
+        /* Two delivery models exist: hidclass's own METHOD_NEITHER request passed straight through
+           (the 8520 mshidkmdf.sys is a plain pass-through: HID_XFER_PACKET in Irp->UserBuffer, no
+           input buffer), or a converted request (report ID in the input buffer, report in the output
+           buffer). Tell them apart by the input length and never dereference anything else. */
+        PIRP irp = WdfRequestWdmGetIrp(Request);
         ULONG written = 0;
         if (c->Cfg.GetFeature == NULL) { st = STATUS_NOT_SUPPORTED; break; }
-        st = WdfRequestRetrieveInputMemory(Request, &inMem);
-        if (!NT_SUCCESS(st)) break;
-        st = WdfRequestRetrieveOutputMemory(Request, &outMem);
-        if (!NT_SUCCESS(st)) break;
-        inBuf = (PUCHAR)WdfMemoryGetBuffer(inMem, &inLen);
-        outBuf = (PUCHAR)WdfMemoryGetBuffer(outMem, &outLen);
-        if (inBuf == NULL || inLen < 1 || outBuf == NULL || outLen == 0 || outLen > MAXULONG) {
-            st = STATUS_INVALID_BUFFER_SIZE;
-            break;
+        if (InLen == 0 && OutLen >= sizeof(HID_XFER_PACKET) && irp->UserBuffer != NULL) {
+            PHID_XFER_PACKET p = (PHID_XFER_PACKET)irp->UserBuffer;
+            if (p->reportBuffer == NULL || p->reportBufferLen == 0) { st = STATUS_INVALID_BUFFER_SIZE; break; }
+            st = c->Cfg.GetFeature(c->Cfg.Ctx, p->reportId, p->reportBuffer, p->reportBufferLen, &written);
+        } else {
+            WDFMEMORY inMem, outMem;
+            size_t inSz = 0, outSz = 0;
+            PUCHAR inBuf, outBuf;
+            st = WdfRequestRetrieveInputMemory(Request, &inMem);
+            if (NT_SUCCESS(st)) st = WdfRequestRetrieveOutputMemory(Request, &outMem);
+            if (!NT_SUCCESS(st)) break;
+            inBuf = (PUCHAR)WdfMemoryGetBuffer(inMem, &inSz);
+            outBuf = (PUCHAR)WdfMemoryGetBuffer(outMem, &outSz);
+            if (inBuf == NULL || inSz < 1 || outBuf == NULL || outSz == 0 || outSz > MAXULONG) { st = STATUS_INVALID_BUFFER_SIZE; break; }
+            st = c->Cfg.GetFeature(c->Cfg.Ctx, inBuf[0], outBuf, (ULONG)outSz, &written);
         }
-        st = c->Cfg.GetFeature(c->Cfg.Ctx, inBuf[0], outBuf, (ULONG)outLen, &written);
         if (NT_SUCCESS(st)) info = written;
         break;
     }
