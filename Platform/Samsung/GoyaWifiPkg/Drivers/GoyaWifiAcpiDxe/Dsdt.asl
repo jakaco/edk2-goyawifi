@@ -51,12 +51,14 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
         Memory32Fixed (ReadWrite, 0xD4015060, 0x4)
       })
     }
-    // TWSI2 (I2C bus 2): the 88PM822 PMIC (base page 0x30). Exposed only so the keys driver can read the
-    // power-key status bit. The firmware runtime services (reset/poweroff) share this controller.
+    // TWSI2 (I2C bus 2): the 88PM822 PMIC (base page 0x30), the power I2C of the SoC. Hidden from
+    // Windows (_STA 0): with goyai2c resetting and driving this unit Windows stopped intermittently with
+    // KMODE_EXCEPTION_NOT_HANDLED outside any driver code, which fits disturbed PMIC/voltage traffic.
+    // The firmware runtime services (reset/poweroff) keep using it.
     Device (I2C2) {
       Name (_HID, "MRVL0004")
       Name (_UID, 2)
-      Method (_STA) { Return (0xF) }
+      Method (_STA) { Return (0x0) }
       Name (_CRS, ResourceTemplate () {
         Memory32Fixed (ReadWrite, 0xD4037000, 0x1000)
         Memory32Fixed (ReadWrite, 0xD403B028, 0x4)
@@ -71,14 +73,12 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
         I2cSerialBus (0x20, ControllerInitiated, 400000, AddressingMode7Bit, "\\_SB.I2C1", 0, ResourceConsumer, , )
       })
     }
-    // Hardware keys: volume up/down + home (GPIO 1/2/13, read directly) and power (PMIC onkey @0x30 on I2C2)
+    // Hardware keys: volume up/down + home (GPIO 1/2/13, read directly). The power key (PMIC onkey on
+    // I2C2) is not exposed while I2C2 is hidden.
     Device (KEY0) {
       Name (_HID, "MRVL0006")
       Name (_UID, 0)
       Method (_STA) { Return (0xF) }
-      Name (_CRS, ResourceTemplate () {
-        I2cSerialBus (0x30, ControllerInitiated, 400000, AddressingMode7Bit, "\\_SB.I2C2", 0, ResourceConsumer, , )
-      })
     }
     // microSD host (SDH1) = Windows boot disk. HID MRVL0007 binds goyasdhc (Storport miniport, boot
     // start, polled PIO). No _CID PNP0D40 on purpose: the inbox sdbus.sys must never take this
