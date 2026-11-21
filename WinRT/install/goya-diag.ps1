@@ -209,7 +209,8 @@ switch ($act) {
     }
     { $_ -in 'disable', 'enable' } {
         # 'all' = every Goya driver: for finding which one crashes (disable all, then enable one per boot)
-        $names = if ($Arg -eq 'all') { @($GoyaServices.Keys | Where-Object { $_ -ne 'mshidkmdf' }) } else { @($Arg) }
+        # 'all' leaves goyagpio out (it crashes the 8520 GPIO class extension); name it explicitly to change it
+        $names = if ($Arg -eq 'all') { @($GoyaServices.Keys | Where-Object { $_ -ne 'mshidkmdf' -and ($_ -ne 'goyagpio' -or $Action -eq 'disable') }) } else { @($Arg) }
         foreach ($n in $names) {
             if (-not $n -or -not $GoyaServices.Contains($n)) { throw "service must be 'all' or one of: $($GoyaServices.Keys -join ', ')" }
         }

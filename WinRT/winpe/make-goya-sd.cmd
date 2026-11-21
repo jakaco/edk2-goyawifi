@@ -94,13 +94,24 @@ if not "%RC%"=="0" goto discard
 if not exist "%KITDRV%\goyasdhc.inf" goto perdriver
 rem every goya*.inf; NOT HalExtMmpTimer.inf (the HAL extension is not a PnP driver here: its DLL and
 rem OSEDB entry are set directly, an offline INF AddReg would only overwrite that entry)
+rem goyagpio is left out: the pre-release 8520 GPIO class extension stops Windows with
+rem SYSTEM_THREAD_EXCEPTION_NOT_HANDLED when it starts, and nothing needs it (goyakeys reads the GPIO
+rem register directly, goyatouch polls). Set GOYA_GPIO=1 to add it anyway.
 for %%I in ("%KITDRV%\goya*.inf") do (
-  echo   adding %%~nxI
-  dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
+  if /i "%%~nI"=="goyagpio" if not "%GOYA_GPIO%"=="1" (echo   skipping %%~nxI) else (
+    echo   adding %%~nxI
+    dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
+  )
+  if /i not "%%~nI"=="goyagpio" (
+    echo   adding %%~nxI
+    dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
+  )
 )
 goto drvdone
 :perdriver
-for %%N in (goyagpio goyai2c goyatouch goyakeys goyapinmux goyasdhc) do call :optdrv %%N || goto discard
+set GOYA_DRVLIST=goyai2c goyatouch goyakeys goyapinmux goyasdhc
+if "%GOYA_GPIO%"=="1" set GOYA_DRVLIST=goyagpio %GOYA_DRVLIST%
+for %%N in (%GOYA_DRVLIST%) do call :optdrv %%N || goto discard
 :drvdone
 
 rem HAL extension entry LAST, so that nothing added above can overwrite it

@@ -119,9 +119,18 @@ echo === 2/6 applying image index %IDX% to %W%:\ (takes a while on an SD card)
 dism /Apply-Image /ImageFile:"%WIM%" /Index:%IDX% /ApplyDir:%W%:\ || goto fail
 
 echo === 3/6 drivers (goya*.inf; the HAL extension is registered directly in step 4)
+rem goyagpio is left out: the pre-release 8520 GPIO class extension stops Windows with
+rem SYSTEM_THREAD_EXCEPTION_NOT_HANDLED when it starts, and nothing needs it (goyakeys reads the GPIO
+rem register directly, goyatouch polls). Set GOYA_GPIO=1 to add it anyway.
 for %%I in ("%DRV%\goya*.inf") do (
-  echo   adding %%~nxI
-  dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
+  if /i "%%~nI"=="goyagpio" if not "%GOYA_GPIO%"=="1" (echo   skipping %%~nxI) else (
+    echo   adding %%~nxI
+    dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
+  )
+  if /i not "%%~nI"=="goyagpio" (
+    echo   adding %%~nxI
+    dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
+  )
 )
 
 echo === 4/6 HAL extension, boot-start storage driver
