@@ -61,14 +61,26 @@ static VOID Snapshot(VOID)
     }
 }
 
+/* Test: holding Volume Up + Volume Down together for ~3 s stops Windows on purpose
+   (MANUALLY_INITIATED_CRASH 0xE2, P1 = 0x60A7B06), to check that the goyabug box appears.
+   Keys from goyakeys: GPLR bank 0 of the GPIO block, bits 1 (up) and 2 (down), active low. */
+#define GPIO_PHYS 0xD4019000ULL
+#define VOL_BITS  ((1UL << 1) | (1UL << 2))
+static PULONG gGplr;
+
 static VOID SnapshotThread(PVOID Context)
 {
     LARGE_INTEGER t;
+    ULONG n = 0, held = 0;
     UNREFERENCED_PARAMETER(Context);
-    t.QuadPart = -20000000LL;                /* 2 s */
+    t.QuadPart = -10000000LL;                /* 1 s */
     for (;;) {
         KeDelayExecutionThread(KernelMode, FALSE, &t);
-        Snapshot();
+        if (++n % 2 == 0) Snapshot();        /* module list every 2 s */
+        if (gGplr != NULL) {
+            held = ((READ_REGISTER_ULONG(gGplr) & VOL_BITS) == 0) ? held + 1 : 0;
+            if (held >= 3) KeBugCheckEx(0xE2, 0x60A7B06, 0, 0, 0);
+        }
     }
 }
 
@@ -151,6 +163,7 @@ static const char *StopName(ULONG Code)
     case 0x9F: return "DRIVER_POWER_STATE_FAILURE";
     case 0xC4: return "DRIVER_VERIFIER_DETECTED_VIOLATION";
     case 0xD1: return "DRIVER_IRQL_NOT_LESS_OR_EQUAL";
+    case 0xE2: return "MANUALLY_INITIATED_CRASH (test)";
     case 0x133: return "DPC_WATCHDOG_VIOLATION";
     case 0x139: return "KERNEL_SECURITY_CHECK_FAILURE";
     default: return "";
@@ -251,6 +264,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
     gList[0] = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, LIST_BYTES, 'gubG');
     gList[1] = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, LIST_BYTES, 'gubG');
     Snapshot();
+    {
+        PHYSICAL_ADDRESS pa;
+        pa.QuadPart = GPIO_PHYS;
+        gGplr = (PULONG)MmMapIoSpace(pa, sizeof(ULONG), MmNonCached);
+    }
 
     KeInitializeCallbackRecord(&gRecord);
     if (!KeRegisterBugCheckCallback(&gRecord, BugCheckCallback, NULL, 0, (PUCHAR)"goyabug")) {

@@ -29,7 +29,7 @@ License:      MIT (derived from Microsoft imx-iotcore HalExtiMX6Timers)
 #define MMP_TIMER_TYPE_EVENT    1            // counter 0, generates the interrupt
 #define MMP_TIMER_TYPE_COUNTER  2            // counter 1, readable free-running counter
 
-#define MMP_COUNTER_READ_SPINS  3            // CVWR needs a few bus cycles to latch
+#define MMP_COUNTER_READ_SPINS  12           // CVWR latch: >= 3 cycles of the 3.25 MHz counter clock
 #define MMP_RESET_MAX_TICKS     0xFFFFFFFFULL
 
 #endif

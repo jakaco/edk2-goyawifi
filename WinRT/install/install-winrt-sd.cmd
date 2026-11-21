@@ -195,6 +195,7 @@ if exist "%W%:\Windows\System32\drivers\goyabug.sys" (
   reg add "%K%\Services\goyabug" /v Type /t REG_DWORD /d 1 /f >nul
   reg add "%K%\Services\goyabug" /v Start /t REG_DWORD /d 0 /f >nul
   reg add "%K%\Services\goyabug" /v ErrorControl /t REG_DWORD /d 0 /f >nul
+  reg add "%K%\Services\goyabug" /v Group /t REG_SZ /d "System Reserved" /f >nul
   reg add "%K%\Services\goyabug" /v ImagePath /t REG_EXPAND_SZ /d "System32\drivers\goyabug.sys" /f >nul
 )
 rem goyasdhc must be loaded by the boot loader no matter what DISM did with it

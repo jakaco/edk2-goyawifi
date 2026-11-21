@@ -129,6 +129,8 @@ if defined BUGSYS (
   reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v Type /t REG_DWORD /d 1 /f >nul
   reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v Start /t REG_DWORD /d 0 /f >nul
   reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v ErrorControl /t REG_DWORD /d 0 /f >nul
+  rem first boot-driver group, so that it is ready as early as a driver can be
+  reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v Group /t REG_SZ /d "System Reserved" /f >nul
   reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v ImagePath /t REG_EXPAND_SZ /d "System32\drivers\goyabug.sys" /f >nul
   echo   goyabug boot driver added
 )

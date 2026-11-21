@@ -162,10 +162,13 @@ static NTSTATUS HalpMmpCounterInitialize(__in PVOID TimerDataPtr)
     return STATUS_SUCCESS;
 }
 
+static volatile ULONG gLastCounter;
+
 static ULONGLONG HalpMmpCounterQuery(__in PVOID TimerDataPtr)
 {
     PMMP_TIMER_INTERNAL_DATA T = (PMMP_TIMER_INTERNAL_DATA)TimerDataPtr;
     ULONG Value = 0;
+    ULONG Last;
     ULONG I;
 
     if ((gQueryCount++ & 0xFFF) == 0) {
@@ -174,14 +177,34 @@ static ULONGLONG HalpMmpCounterQuery(__in PVOID TimerDataPtr)
 
     //
     // The counter cannot be read directly: request a latch, then read the
-    // latched value back after a few bus cycles. No stall function may be
-    // used here (the HAL's stall depends on this counter).
+    // latched value back. The latch takes a few cycles of the 3.25 MHz
+    // counter clock (~1 us); three APB reads were not always enough, which
+    // returns the previous latch (time standing still) - a suspected cause of
+    // the intermittent early stops. Now: at least MMP_COUNTER_READ_SPINS reads,
+    // then until two consecutive reads agree, and never backwards. No stall
+    // function may be used here (the HAL's stall depends on this counter).
     //
     WriteReg(T->BaseAddressPtr, MMP_TMR_CVWR(MMP_FREE_COUNTER), 1);
     for (I = 0; I < MMP_COUNTER_READ_SPINS; I++) {
         Value = ReadReg(T->BaseAddressPtr, MMP_TMR_CVWR(MMP_FREE_COUNTER));
     }
+    for (I = 0; I < 16; I++) {
+        ULONG Again = ReadReg(T->BaseAddressPtr, MMP_TMR_CVWR(MMP_FREE_COUNTER));
+        if (Again == Value) {
+            break;
+        }
+        Value = Again;
+    }
 
+    //
+    // Monotonic: a value slightly behind the last one returned is a bad latch,
+    // not a wrap (a wrap is a small positive difference modulo 2^32).
+    //
+    Last = gLastCounter;
+    if ((LONG)(Value - Last) < 0 && (Last - Value) < 0x40000000UL) {
+        Value = Last;
+    }
+    gLastCounter = Value;
     return Value;
 }
 
