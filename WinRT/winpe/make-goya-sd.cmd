@@ -102,14 +102,20 @@ for %%I in ("%KITDRV%\goya*.inf") do (
     echo   adding %%~nxI
     dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
   )
-  if /i not "%%~nI"=="goyagpio" (
+  if /i "%%~nI"=="goyasdhc" if not "%GOYA_SDHC%"=="1" echo   skipping %%~nxI ^(WinPE runs from RAM; under investigation, set GOYA_SDHC=1 to add^)
+  if /i "%%~nI"=="goyasdhc" if "%GOYA_SDHC%"=="1" (
+    echo   adding %%~nxI
+    dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
+  )
+  if /i not "%%~nI"=="goyagpio" if /i not "%%~nI"=="goyasdhc" (
     echo   adding %%~nxI
     dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
   )
 )
 goto drvdone
 :perdriver
-set GOYA_DRVLIST=goyai2c goyatouch goyakeys goyapinmux goyasdhc
+set GOYA_DRVLIST=goyai2c goyatouch goyakeys goyapinmux
+if "%GOYA_SDHC%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyasdhc
 if "%GOYA_GPIO%"=="1" set GOYA_DRVLIST=goyagpio %GOYA_DRVLIST%
 for %%N in (%GOYA_DRVLIST%) do call :optdrv %%N || goto discard
 :drvdone
