@@ -4,10 +4,12 @@ UEFI firmware (TianoCore EDK2) for the **Samsung Galaxy Tab 3 Lite 7.0 Wi-Fi
 (SM-T110, `goyawifi`)**, built on the **Marvell PXA986** (PXA988 family,
 2x Cortex-A9, 1 GiB LPDDR2).
 
-> **Status: builds, not yet tested on hardware.** The same boot path
-> (S-Boot -> KERNEL partition -> 0x10008000, zImage header) is proven by the
-> goyawifi U-Boot port, which runs on the tablet. DEBUG builds print their
-> log **on the screen**, so no UART is needed (see [Debugging](#debugging)).
+> **Status: boots on hardware.** UEFI (boot menu, setup, hardware keys,
+> diagnostics app, eMMC and microSD) runs on the tablet, and Windows 8 build
+> 8520 (Windows RT, ARM32) **WinPE boots from microSD with working touch and
+> keys**. Full working / not working list: [Hardware status](#hardware-status).
+> DEBUG builds print their log **on the screen**, so no UART is needed (see
+> [Debugging](#debugging)).
 
 ## How it boots
 
@@ -49,6 +51,10 @@ Platform/Samsung/GoyaWifiPkg/
   GoyaWifi.dsc / GoyaWifi.fdf         platform description, FD at 0x10008000 (2 MiB)
   Library/GoyaWifiPlatformPeiLib      FV HOB + reserved regions (OBM, CP, ramoops, FB)
   Drivers/GoyaWifiKeypadDxe           Vol Up / Vol Down / Home as Up / Down / Enter
+  Drivers/GoyaWifiAcpiDxe             ACPI 5.0 tables for Windows RT
+  Drivers/WinKernelFixupDxe           Windows 8.0 kernel fixes at ExitBootServices
+  Drivers/GoyaWifiChargerDxe          SMB328 charger
+WinRT/                                Windows RT: HAL extension, drivers, WinPE/install scripts, goyaosk
   Dtb/pxa986-samsung-goyawifi.dtb     DT installed for the OS (from the 4.19 kernel tree)
 tools/mkbootimg-goyawifi.py           boot.img (+ Odin .tar.md5) packer
 build.sh                              fetch EDK2, build, pack
@@ -102,10 +108,130 @@ flash a stock/LineageOS `boot.img` to `KERNEL`.
 | Diagnostics | GoyaWifiDiagApp | boot menu entry "GoyaWifi Diagnostics" (also startable from the Shell: `fs0:` is not needed, it lives in the firmware volume). Read-only pages: system (firmware, CPU, **timer interrupt test**, GIC, ICU, RAM, CPU1 result), board (88PM822, display, SDH1/SDH3 registers and card detect, disks), bring-up drivers (`Cpu1Status`, `UsbStatus`, live EHCI registers), a colour test and a live key test with raw GPIO/ONKEY levels next to the UEFI key events. Every register block is only read when its clock is on. Inspired by RossaDiag (notnoelchannel2/rossadiag) |
 | Reset / power off | Pxa988ResetSystemLib | WDT; 88PM822 `SW_PDOWN` over TWSI2 |
 | Variables | emulated (RAM) | not persistent across reboots |
-| OS hand-off | DtPlatformDxe | DT config table, no ACPI |
+| OS hand-off | GoyaWifiAcpiDxe + DtPlatformDxe | ACPI 5.0 (FADT HW_REDUCED, FACS, MADT, CSRT, SPCR, DSDT) for Windows; DT config table for Linux |
+| Windows kernel fixes | WinKernelFixupDxe | at ExitBootServices: stops the 8520 kernel from touching the locked CP14 debug registers; takes a pending asynchronous abort (marker in the bottom-right corner) |
+| Touch supply | Pxa988SdhciDxe | 88PM822 LDO1 (touch vdd) set to 2.8 V and switched on if S-Boot left it off |
+| USB device | Pxa988UsbDxe (UsbGadget.c) | CDC-ACM serial console (VID 1209 / PID 0001) when the core refuses host mode |
+| DVFS | Pxa988DvfsDxe | one-shot move to 1066 MHz (PLL2), `PcdDvfsEnable` |
+| Charging | GoyaWifiChargerDxe | SMB328 at 500 mA while UEFI runs |
 
-Not implemented: EFI_MP_SERVICES (CPU1 is only self-tested), VBUS switching, USB
-device mode, DVFS, persistent variables, charging.
+Not implemented: EFI_MP_SERVICES (CPU1 is only self-tested), VBUS switching,
+persistent variables.
+
+## Hardware status
+
+Everything said in this project's test rounds so far, as of 2026-11-21.
+"Works" means seen working on the tablet; "untested" means built and booted but
+the result was never checked or reported.
+
+### Firmware (UEFI)
+
+**Works**
+
+* Boot from the KERNEL partition through S-Boot (Odin/heimdall flash), and from
+  the U-Boot port with `fastboot boot` (self-relocating FD header).
+* On-screen DEBUG log; display through S-Boot's framebuffer, colours correct
+  (BGRA).
+* GIC and MMP timer interrupts (timer interrupt test passes in the diag app).
+* Boot menu, Device Manager / setup screens and the UEFI Shell.
+* Hardware keys: Vol Up / Vol Down = Up / Down, Home = Enter, Power = Esc.
+* Second core self-test: CPU1 comes up (MPIDR 0x80000001) and answers the ping.
+* eMMC (7456 MB plus two 2 MB boot partitions).
+* microSD (SDH1, LDO4/LDO5 power, GPIO11 card detect): Windows boots from it.
+* GoyaWifi Diagnostics app (all pages, key test, colour test).
+* ACPI tables: accepted by the Windows 8 build 8520 kernel and HAL (after the
+  CSRT timer descriptor was changed to subtype 0).
+* WinKernelFixupDxe CP14 fix (green marker; before it the 8520 kernel stopped
+  early).
+* Touch supply: firmware switches on LDO1 at 2.8 V; without it the touch chip
+  never answers.
+* Runtime services under Windows (ResetSystem, timer and PMIC bases converted
+  at SetVirtualAddressMap).
+* Windows RTC workaround: `tools/build-winrt.sh` images start the clock at
+  2012-08-01 for the build 8520 timebomb.
+
+**Doesn't work**
+
+* USB host: the ChipIdea core stays in device mode (USBMODE reads 2 after
+  writing 3) and the PHY PLL-ready bit never sets. There is also no VBUS
+  switching, so a powered hub / OTG Y cable would be needed anyway.
+
+**Untested / result not reported**
+
+* USB device-mode CDC-ACM serial console (`dmpstore UsbStatus`).
+* DVFS to 1066 MHz (`dmpstore DvfsStatus`).
+* SMB328 charging in UEFI (`dmpstore ChargerStatus`); CHG_EN polarity
+  (GPIO98) may need flipping. The SMB328 watchdog stops charging shortly after
+  UEFI exits.
+* Asynchronous-abort check at ExitBootServices: bottom-right marker colour
+  (green = no pending abort, cyan = one was pending and taken, blue = pending
+  and not cleared) not yet reported over several boots.
+* `acpiview` on hardware.
+* Booting Linux through the EFI stub (needs a kernel without
+  `ARM_SAMSUNG_PXA_BOOTFIXUP`).
+
+**Not implemented**
+
+* Persistent UEFI variables (still emulated in RAM). The microSD card is ruled
+  out (it holds only Windows RT); an eMMC area hasn't been chosen.
+* EFI_MP_SERVICES; VBUS control.
+
+### Windows 8 build 8520 (Windows RT, ARM32)
+
+Drivers live in `WinRT/`; CI builds and test-signs them (`signed-drivers`
+branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
+`WinRT/install/install-winrt-sd.cmd`.
+
+**Works**
+
+* WinPE boots from microSD to the command prompt, reliably since the
+  HalExtMmpTimer counter fix.
+* **HalExtMmpTimer** (timer HAL extension, MMP timer, CSRT): latch-safe,
+  monotonic counter read. Its older 3-read sequence caused random early
+  KMODE_EXCEPTION_NOT_HANDLED stops before any driver loaded.
+* **goyatouch** (WDM mouse port driver on the I2C1 controller, ACPI\MRVL0004):
+  touch works as an absolute mouse pointer (first finger = pointer + left
+  button) through mouclass. It drives TWSI1 itself and programs the Zinitix
+  BT532 at 0x20 like the vendor driver; it clears the chip interrupt whenever
+  INT (GPIO94, pull-up on) is low.
+* **goyakeys** (KMDF lower filter under mshidkmdf): Vol Up, Vol Down and Home.
+* **goyabug** (bugcheck callback): loads early ("7 01"); draws the stop code,
+  parameters and the faulting driver on the stop screen.
+* Display through the firmware framebuffer (1024x600).
+* Test signing (testsigning + nointegritychecks in the BCD).
+* Driver build: no NEON in drivers (own memcpy/memset in `common/goyamem.c`;
+  the 8.0 kernel stops with KMODE_EXCEPTION_NOT_HANDLED otherwise).
+* Fixed stops along the way: 0xC4, 0x5C (CSRT subtype), KMODE (NEON memcpy,
+  timer read), SYSTEM_THREAD (goyagpio, left out).
+
+**Doesn't work / left off the card**
+
+* **goyasdhc** (Storport microSD miniport): crashes, fix deferred. Without it
+  Windows can't see the SD card after boot (WinPE runs from its RAM disk, so
+  `autorun.cmd` / diag files on the card never run).
+* **goyagpio** (GpioClx): the 8520 GPIO class extension stops with
+  SYSTEM_THREAD_EXCEPTION_NOT_HANDLED. Left out.
+* **goyapinmux**: left off until its MFPR mask is trimmed.
+* **goyai2c** (SpbCx): replaced by goyatouch on I2C1 (using both conflicts);
+  I2C2 (PMIC) is hidden from Windows (`_STA` 0).
+* Power key: no driver (KEY0 has no resource while I2C2 is hidden).
+* Touch through the HID stack (hidclass / mshidkmdf minidriver): never gave a
+  pointer; replaced by the mouse port driver.
+* TCH0 (MRVL0005) in the DSDT has no driver.
+
+**Untested / result not reported**
+
+* goyabug's test stop (Vol Up + Vol Down held 3 s → stop 0xE2).
+* goyaosk on-screen keyboard with touch.
+* Full Windows RT install on microSD (`install-winrt-sd.cmd`).
+* Whether the random early stop is completely gone (one more since the timer
+  fix, before the async-abort check).
+
+**Not available**
+
+* Second core in Windows (CPU1 disabled in the MADT).
+* Charging and battery in Windows (no SMB328 / fuel-gauge driver).
+* Wi-Fi, audio, sensors, camera, USB, GPU acceleration (no drivers).
 
 ## Second core and USB: what to look for
 
