@@ -91,30 +91,16 @@ set RC=%errorlevel%
 reg unload HKLM\GOYAPE_SOFTWARE >nul
 if not "%RC%"=="0" goto discard
 :nocert
-if not exist "%KITDRV%\goyasdhc.inf" goto perdriver
-rem every goya*.inf; NOT HalExtMmpTimer.inf (the HAL extension is not a PnP driver here: its DLL and
-rem OSEDB entry are set directly, an offline INF AddReg would only overwrite that entry)
-rem goyagpio is left out: the pre-release 8520 GPIO class extension stops Windows with
-rem SYSTEM_THREAD_EXCEPTION_NOT_HANDLED when it starts, and nothing needs it (goyakeys reads the GPIO
-rem register directly, goyatouch polls). Set GOYA_GPIO=1 to add it anyway.
-for %%I in ("%KITDRV%\goya*.inf") do (
-  if /i "%%~nI"=="goyagpio" if not "%GOYA_GPIO%"=="1" (echo   skipping %%~nxI) else (
-    echo   adding %%~nxI
-    dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
-  )
-  if /i "%%~nI"=="goyasdhc" if not "%GOYA_SDHC%"=="1" echo   skipping %%~nxI ^(WinPE runs from RAM; under investigation, set GOYA_SDHC=1 to add^)
-  if /i "%%~nI"=="goyasdhc" if "%GOYA_SDHC%"=="1" (
-    echo   adding %%~nxI
-    dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
-  )
-  if /i not "%%~nI"=="goyagpio" if /i not "%%~nI"=="goyasdhc" (
-    echo   adding %%~nxI
-    dism /Image:"%MNT%" /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto discard
-  )
-)
-goto drvdone
-:perdriver
-set GOYA_DRVLIST=goyai2c goyatouch goyakeys goyapinmux
+rem Drivers put on a WinPE card. Default: goyatouch (HID mouse, drives its I2C bus itself) and goyakeys.
+rem Left out by default, each can be added back by setting the variable to 1 before running:
+rem   GOYA_PINMUX=1  goyapinmux - with it, Windows stopped intermittently (KMODE_EXCEPTION_NOT_HANDLED)
+rem   GOYA_I2C=1     goyai2c    - not needed by goyatouch; would drive the same I2C unit (conflict)
+rem   GOYA_SDHC=1    goyasdhc   - WinPE runs from RAM; under investigation
+rem   GOYA_GPIO=1    goyagpio   - the 8520 GPIO class extension stops Windows when it starts
+rem HalExtMmpTimer.inf is never added: the HAL extension entry is set directly below.
+set GOYA_DRVLIST=goyatouch goyakeys
+if "%GOYA_PINMUX%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyapinmux
+if "%GOYA_I2C%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyai2c
 if "%GOYA_SDHC%"=="1" set GOYA_DRVLIST=%GOYA_DRVLIST% goyasdhc
 if "%GOYA_GPIO%"=="1" set GOYA_DRVLIST=goyagpio %GOYA_DRVLIST%
 for %%N in (%GOYA_DRVLIST%) do call :optdrv %%N || goto discard
@@ -165,11 +151,12 @@ exit /b 0
 
 :optdrv
 set DDIR=
-if exist "%HERE%%1.inf" set DDIR=%HERE%
+if exist "%KITDRV%\%1.inf" set DDIR=%KITDRV%\
+if not defined DDIR if exist "%HERE%%1.inf" set DDIR=%HERE%
 if not defined DDIR if exist "%HERE%..\drivers\%1\out\%1.inf" set DDIR=%HERE%..\drivers\%1\out\
 if not defined DDIR (echo   %1: not found, skipping & exit /b 0)
 echo   adding %1
-dism /Image:"%MNT%" /Add-Driver /Driver:"%DDIR%%1.inf" /ForceUnsigned
+dism /Image:"%MNT%" /Add-Driver /Driver:"%DDIR%%1.inf" /ForceUnsigned >nul
 exit /b %errorlevel%
 
 :discard

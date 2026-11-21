@@ -83,6 +83,17 @@ static VOID GoyaTraceStep(ULONG Site)
     GtHex(fb, x, y, Site, 2, 0x0000FF00, 0x00202020);
 }
 
+/* A 32-bit value at the top right, below the step lines (Slot 0..1 per driver). */
+static VOID GoyaTraceValue(ULONG Slot, ULONG Value)
+{
+    PULONG fb = GtFb();
+    ULONG y = 8 + (7 + (GOYA_TRACE_ID - 1) * 2 + Slot) * 6 * GT_SCALE, x = GT_FB_W - 12 * 4 * GT_SCALE;
+    if (fb == NULL || Slot > 1) return;
+    x = GtHex(fb, x, y, GOYA_TRACE_ID, 1, 0x00FFFFFF, 0x00202020);
+    x = GtHex(fb, x, y, Slot, 1, 0x00808080, 0x00202020);
+    GtHex(fb, x, y, Value, 8, 0x0000FFFF, 0x00202020);
+}
+
 /* Exception filter: report once per driver and handle the exception. */
 static LONG GoyaTraceFilter(PEXCEPTION_POINTERS Ep, ULONG Site)
 {

@@ -44,7 +44,10 @@ jobs:
           set DDK_INC_PATH=%KITS%\Include\10.0.19041.0
           set LIB=%KITS%\Lib\10.0.19041.0\km\arm;%LIB%
           if "${{ matrix.driver }}"=="HalExtMmpTimer" (cd WinRT\HalExtMmpTimer && call build.cmd w10 && exit /b 0)
-          if "${{ matrix.driver }}"=="goyasdhc" (call WinRT\drivers\build-storport.cmd goyasdhc) else (call WinRT\drivers\build-kmdf.cmd ${{ matrix.driver }})
+          set B=build-kmdf.cmd
+          if "${{ matrix.driver }}"=="goyasdhc" set B=build-storport.cmd
+          if "${{ matrix.driver }}"=="goyatouch" set B=build-wdm.cmd
+          call WinRT\drivers\%B% ${{ matrix.driver }}
 
       - uses: actions/upload-artifact@v4
         with:
