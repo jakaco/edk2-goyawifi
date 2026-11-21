@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        driver: [goyagpio, goyai2c, goyatouch, goyakeys, goyapinmux, goyasdhc]
+        driver: [goyagpio, goyai2c, goyatouch, goyakeys, goyapinmux, goyasdhc, goyabug]
         dir: [WinRT/drivers]
         include:
           - driver: HalExtMmpTimer
@@ -47,6 +47,7 @@ jobs:
           set B=build-kmdf.cmd
           if "${{ matrix.driver }}"=="goyasdhc" set B=build-storport.cmd
           if "${{ matrix.driver }}"=="goyatouch" set B=build-wdm.cmd
+          if "${{ matrix.driver }}"=="goyabug" set B=build-wdm.cmd
           call WinRT\drivers\%B% ${{ matrix.driver }}
 
       - uses: actions/upload-artifact@v4

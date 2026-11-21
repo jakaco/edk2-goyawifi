@@ -135,6 +135,7 @@ for %%I in ("%DRV%\goya*.inf") do (
 
 echo === 4/6 HAL extension, boot-start storage driver
 copy /y "%DRV%\HalExtMmpTimer.dll" %W%:\Windows\System32\HalExtMmpTimer.dll >nul || goto fail
+if exist "%DRV%\goyabug.sys" copy /y "%DRV%\goyabug.sys" %W%:\Windows\System32\drivers\goyabug.sys >nul
 if not exist %W%:\Windows\System32\drivers\goyasdhc.sys copy /y "%DRV%\goyasdhc.sys" %W%:\Windows\System32\drivers\ >nul
 reg unload HKLM\%HIVE% >nul 2>&1
 reg load HKLM\%HIVE% %W%:\Windows\System32\config\SYSTEM >nul || goto fail
@@ -189,6 +190,13 @@ reg add "%K%\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t R
 rem Bring-up: the stop screen stays up and shows the four parameters
 reg add "%K%\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f >nul
 reg add "%K%\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f >nul
+rem goyabug: writes stop code, parameters and the faulting driver on the stop screen (boot start)
+if exist "%W%:\Windows\System32\drivers\goyabug.sys" (
+  reg add "%K%\Services\goyabug" /v Type /t REG_DWORD /d 1 /f >nul
+  reg add "%K%\Services\goyabug" /v Start /t REG_DWORD /d 0 /f >nul
+  reg add "%K%\Services\goyabug" /v ErrorControl /t REG_DWORD /d 0 /f >nul
+  reg add "%K%\Services\goyabug" /v ImagePath /t REG_EXPAND_SZ /d "System32\drivers\goyabug.sys" /f >nul
+)
 rem goyasdhc must be loaded by the boot loader no matter what DISM did with it
 reg add "%K%\Services\goyasdhc" /v Type /t REG_DWORD /d 1 /f >nul || exit /b 1
 reg add "%K%\Services\goyasdhc" /v Start /t REG_DWORD /d 0 /f >nul

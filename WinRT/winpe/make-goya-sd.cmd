@@ -110,6 +110,20 @@ rem HAL extension entry LAST, so that nothing added above can overwrite it
 reg load HKLM\%HIVE% "%MNT%\Windows\System32\config\SYSTEM" >nul || goto discard
 reg add "HKLM\%HIVE%\ControlSet001\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t REG_SZ /d "%HALEXT_REGPATH%" /f >nul
 set RC=%errorlevel%
+rem goyabug: boot driver that writes the stop code, parameters and the faulting driver on the stop
+rem screen (8520 shows no parameters). Set GOYA_BUG=0 to leave it out.
+set BUGSYS=
+if exist "%KITDRV%\goyabug.sys" set BUGSYS=%KITDRV%\goyabug.sys
+if not defined BUGSYS if exist "%HERE%goyabug.sys" set BUGSYS=%HERE%goyabug.sys
+if "%GOYA_BUG%"=="0" set BUGSYS=
+if defined BUGSYS (
+  copy /y "%BUGSYS%" "%MNT%\Windows\System32\drivers\goyabug.sys" >nul
+  reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v Type /t REG_DWORD /d 1 /f >nul
+  reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v Start /t REG_DWORD /d 0 /f >nul
+  reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v ErrorControl /t REG_DWORD /d 0 /f >nul
+  reg add "HKLM\%HIVE%\ControlSet001\Services\goyabug" /v ImagePath /t REG_EXPAND_SZ /d "System32\drivers\goyabug.sys" /f >nul
+  echo   goyabug boot driver added
+)
 rem Bring-up: the stop screen stays up and shows the four parameters
 reg add "HKLM\%HIVE%\ControlSet001\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f >nul
 reg add "HKLM\%HIVE%\ControlSet001\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f >nul

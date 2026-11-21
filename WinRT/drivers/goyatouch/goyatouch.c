@@ -10,9 +10,15 @@
    resources (Dsdt.asl TCH0: HID MRVL0005, no _CRS). Touch chip at 7-bit address 0x20, protocol from
    the 4.19 kernel drivers/input/touchscreen/zinitix.c (point mode 0, 5 fingers).
 
-   A system thread polls the point-status register every 10 ms (no interrupt). Status on screen
-   (top right, see common\goyatrace.h): "5 0 <status>" = result of the last chip initialisation
-   (00000000 = OK, else NTSTATUS), "5 1 <chip code><firmware>" once the chip answered.
+   A system thread polls the point-status register every 10 ms (no interrupt).
+
+   Status on screen (top right, see common\goyatrace.h), redrawn every second by a thread started in
+   DriverEntry so that WinPE's desktop cannot paint over it:
+     "5 <stage>"  00 driver loaded, 02 device added, 10 started, 11 started and hidclass reads reports,
+                  1F start failed
+     "5 0 <x>"    result of the last chip initialisation (00000000 = OK, else NTSTATUS; FFFFFFFF = none yet)
+     "5 1 <x>"    before the chip answers: the old GPIO87/88 MFPR values; after: chip code (high 16 bits)
+                  and the number of mouse reports sent (low 16 bits)
 */
 #define GOYA_TRACE_ID 5
 #include <ntddk.h>
@@ -135,6 +141,25 @@ typedef struct _DEV_EXT {
     ULONG          InitTries;
     MOUSE_REPORT   Last;
 } DEV_EXT;
+
+/* status shown by the heartbeat thread */
+static volatile ULONG gStage, gInit = 0xFFFFFFFF, gInfo, gChip, gReports;
+static BOOLEAN gChipOk;
+static KEVENT gHbStop;
+static PKTHREAD gHbThread;
+
+static VOID HeartbeatThread(PVOID Context)
+{
+    LARGE_INTEGER t;
+    UNREFERENCED_PARAMETER(Context);
+    t.QuadPart = -10000000LL;               /* 1 s */
+    do {
+        GoyaTraceStep(gStage);
+        GoyaTraceValue(0, gInit);
+        GoyaTraceValue(1, gChipOk ? ((gChip << 16) | (gReports & 0xFFFF)) : gInfo);
+    } while (KeWaitForSingleObject(&gHbStop, Executive, KernelMode, FALSE, &t) == STATUS_TIMEOUT);
+    PsTerminateSystemThread(STATUS_SUCCESS);
+}
 
 static DEV_EXT *GetExt(PDEVICE_OBJECT Fdo)
 {
@@ -315,7 +340,8 @@ static NTSTATUS ZInitChip(DEV_EXT *E)
     CHK(ZReadU16(E, Z_CHIP_REVISION, &rev));
     CHK(ZReadU16(E, Z_FW_VERSION, &fw));
     CHK(ZReadU16(E, Z_DATA_VERSION, &dv));
-    GoyaTraceValue(1, ((ULONG)chip_code << 16) | fw);
+    gChip = chip_code;
+    gChipOk = TRUE;
 
     CHK(ZWriteU16(E, Z_INT_ENABLE, 0));
     CHK(ZCmd(E, Z_SWRESET));
@@ -370,6 +396,7 @@ static VOID CompleteRead(DEV_EXT *E, const MOUSE_REPORT *R)
     PIRP irp = TakeRead(E);
     if (irp == NULL) return;                                /* nobody reading: the report is dropped */
     RtlCopyMemory(irp->UserBuffer, R, sizeof(*R));
+    gReports++;
     irp->IoStatus.Status = STATUS_SUCCESS;
     irp->IoStatus.Information = sizeof(*R);
     IoCompleteRequest(irp, IO_MOUSE_INCREMENT);
@@ -432,7 +459,7 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
             NTSTATUS st;
             E->InitTries++;
             st = ZInitChip(E);
-            GoyaTraceValue(0, (ULONG)st);
+            gInit = (ULONG)st;
             E->Initialized = (BOOLEAN)NT_SUCCESS(st);
         }
         return;
@@ -503,7 +530,7 @@ static VOID SetTwsi1Pins(VOID)
     if (m == NULL) return;
     a = READ_REGISTER_ULONG(&m[0]);
     b = READ_REGISTER_ULONG(&m[1]);
-    GoyaTraceValue(1, (a << 16) | (b & 0xFFFF));
+    gInfo = (a << 16) | (b & 0xFFFF);
     if ((a & MFPR_TWSI1_MASK) != MFPR_TWSI1_VAL) { WRITE_REGISTER_ULONG(&m[0], (a & ~MFPR_TWSI1_MASK) | MFPR_TWSI1_VAL); a = READ_REGISTER_ULONG(&m[0]); }
     if ((b & MFPR_TWSI1_MASK) != MFPR_TWSI1_VAL) { WRITE_REGISTER_ULONG(&m[1], (b & ~MFPR_TWSI1_MASK) | MFPR_TWSI1_VAL); b = READ_REGISTER_ULONG(&m[1]); }
     MmUnmapIoSpace(m, 8);
@@ -544,7 +571,7 @@ static NTSTATUS DispatchPnp(PDEVICE_OBJECT Fdo, PIRP Irp)
             st = StartDevice(E);
             if (!NT_SUCCESS(st)) StopDevice(E);
         }
-        GoyaTraceStep(NT_SUCCESS(st) ? 0x10 : 0x1F);
+        gStage = NT_SUCCESS(st) ? 0x10 : 0x1F;
         Irp->IoStatus.Status = st;
         IoCompleteRequest(Irp, IO_NO_INCREMENT);
         return st;
@@ -620,6 +647,7 @@ static NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT Fdo, PIRP Irp)
         IoMarkIrpPending(Irp);
         InsertTailList(&E->PendingReads, &Irp->Tail.Overlay.ListEntry);
         KeReleaseSpinLock(&E->Lock, irql);
+        if (gStage == 0x10) gStage = 0x11;
         return STATUS_PENDING;
     case IOCTL_HID_ACTIVATE_DEVICE:
     case IOCTL_HID_DEACTIVATE_DEVICE:
@@ -645,13 +673,19 @@ static NTSTATUS AddDevice(PDRIVER_OBJECT Driver, PDEVICE_OBJECT Fdo)
     KeInitializeSpinLock(&E->Lock);
     InitializeListHead(&E->PendingReads);
     Fdo->Flags &= ~DO_DEVICE_INITIALIZING;
-    GoyaTraceStep(0x02);
+    gStage = 0x02;
     return STATUS_SUCCESS;
 }
 
 static VOID DriverUnload(PDRIVER_OBJECT Driver)
 {
     UNREFERENCED_PARAMETER(Driver);
+    if (gHbThread != NULL) {
+        KeSetEvent(&gHbStop, IO_NO_INCREMENT, FALSE);
+        KeWaitForSingleObject(gHbThread, Executive, KernelMode, FALSE, NULL);
+        ObDereferenceObject(gHbThread);
+        gHbThread = NULL;
+    }
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
@@ -670,6 +704,23 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
     reg.RegistryPath = RegistryPath;
     reg.DeviceExtensionSize = sizeof(DEV_EXT);
     reg.DevicesArePolled = FALSE;
-    GoyaTraceStep(0x00);
-    return HidRegisterMinidriver(&reg);
+    gStage = 0x00;
+    KeInitializeEvent(&gHbStop, NotificationEvent, FALSE);
+    {
+        HANDLE h;
+        if (NT_SUCCESS(PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL, HeartbeatThread, NULL))) {
+            ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)&gHbThread, NULL);
+            ZwClose(h);
+        }
+    }
+    {
+        NTSTATUS st = HidRegisterMinidriver(&reg);
+        if (!NT_SUCCESS(st)) {
+            gStage = 0xE0; gInit = (ULONG)st;
+            DriverUnload(Driver);           /* the image is unloaded on failure: stop the thread first */
+            GoyaTraceStep(gStage);
+            GoyaTraceValue(0, gInit);
+        }
+        return st;
+    }
 }

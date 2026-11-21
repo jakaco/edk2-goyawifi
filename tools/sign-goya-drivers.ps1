@@ -78,6 +78,11 @@ try {
         Sign (Join-Path $Dir "$name.cat")
         Write-Host ("  signed {0,-16} {1}" -f $name, ((@($bins.Name) + "$name.cat") -join ', '))
     }
+    # drivers without an INF (goyabug: non-PnP boot driver set up by registry): embedded signature only
+    foreach ($sys in Get-ChildItem -Filter *.sys | Where-Object { -not (Test-Path ($_.BaseName + '.inf')) }) {
+        Sign $sys.FullName
+        Write-Host ("  signed {0,-16} {1} (no INF)" -f $sys.BaseName, $sys.Name)
+    }
     foreach ($exe in Get-ChildItem -Filter *.exe) {      # user-mode tools (goyaosk): no INF / catalog
         Sign $exe.FullName
         Write-Host ("  signed {0,-16} {1}" -f $exe.BaseName, $exe.Name)
