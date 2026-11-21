@@ -12,8 +12,10 @@
      PC / LR <driver>+<offset>                  for stops that pass a CONTEXT (0x7E, 0x1000007E)
      stack: <driver>+<offset> ...               Thumb return addresses found on the current stack
                                                 (heuristic call chain, newest first)
-   Drivers are looked up in a copy of the loaded-module list that a thread refreshes every 2 s (the
-   list itself cannot be walked safely at stop time).
+   Drivers are looked up in a copy of the loaded-module list that a thread refreshes every second (the
+   list itself cannot be walked safely at stop time), in a list of drivers that have unloaded since
+   (shown with a leading '~'), and, for the exception address, by walking back to the image's MZ header
+   and reading its PDB name (finds images that are not in the list).
 
    Non-PnP kernel service, Start 0 (boot), no INF: make-goya-sd.cmd / install-winrt-sd.cmd copy
    goyabug.sys to System32\drivers and create the service key. ErrorControl 0: if it cannot load,
@@ -26,6 +28,7 @@
 
 #define SystemModuleInformation 11
 NTSYSAPI NTSTATUS NTAPI ZwQuerySystemInformation(ULONG Class, PVOID Buffer, ULONG Length, PULONG ReturnLength);
+NTKERNELAPI PUCHAR PsGetProcessImageFileName(PEPROCESS Process);
 
 typedef struct _MODINFO {
     HANDLE Section;
@@ -51,14 +54,46 @@ static KBUGCHECK_CALLBACK_RECORD gRecord;
 
 /* ---- module snapshot (PASSIVE_LEVEL) --------------------------------------------------------- */
 
+/* Modules that disappeared from the list (unloaded drivers): code that still runs there after the unload
+   would otherwise show up as "in no module". Names are stored with a leading '~'. */
+#define GONE_MAX 16
+typedef struct _GONE { ULONG Base, Size; char Name[16]; } GONE;
+static GONE gGone[GONE_MAX];
+static ULONG gGoneNext;
+
+static ULONG ListCount(PUCHAR Buf)
+{
+    ULONG n = ((MODLIST *)Buf)->Count, max = (LIST_BYTES - sizeof(ULONG)) / sizeof(MODINFO);
+    return n < max ? n : max;
+}
+
 static VOID Snapshot(VOID)
 {
-    LONG next = (gActive == 0) ? 1 : 0;
-    ULONG ret = 0;
+    LONG cur = gActive, next = (cur == 0) ? 1 : 0;
+    ULONG ret = 0, i, j;
     if (gList[next] == NULL) return;
-    if (NT_SUCCESS(ZwQuerySystemInformation(SystemModuleInformation, gList[next], LIST_BYTES, &ret))) {
-        InterlockedExchange(&gActive, next);
+    if (!NT_SUCCESS(ZwQuerySystemInformation(SystemModuleInformation, gList[next], LIST_BYTES, &ret))) return;
+    if (cur >= 0) {
+        MODLIST *o = (MODLIST *)gList[cur], *n = (MODLIST *)gList[next];
+        ULONG oc = ListCount(gList[cur]), nc = ListCount(gList[next]);
+        for (i = 0; i < oc; i++) {
+            for (j = 0; j < nc; j++)
+                if (n->M[j].ImageBase == o->M[i].ImageBase && n->M[j].ImageSize == o->M[i].ImageSize) break;
+            if (j == nc) {
+                GONE *g = &gGone[gGoneNext++ % GONE_MAX];
+                USHORT off = o->M[i].OffsetToFileName;
+                const UCHAR *nm = o->M[i].FullPathName + (off < 255 ? off : 0);
+                ULONG k;
+                g->Base = 0;                                    /* invalid while being filled */
+                g->Name[0] = '~';
+                for (k = 0; k < sizeof(g->Name) - 2 && nm[k]; k++) g->Name[k + 1] = (char)nm[k];
+                g->Name[k + 1] = 0;
+                g->Size = o->M[i].ImageSize;
+                g->Base = (ULONG)(ULONG_PTR)o->M[i].ImageBase;
+            }
+        }
     }
+    InterlockedExchange(&gActive, next);
 }
 
 /* Test: holding Volume Up + Volume Down together for ~3 s stops Windows on purpose
@@ -76,7 +111,7 @@ static VOID SnapshotThread(PVOID Context)
     t.QuadPart = -10000000LL;                /* 1 s */
     for (;;) {
         KeDelayExecutionThread(KernelMode, FALSE, &t);
-        if (++n % 2 == 0) Snapshot();        /* module list every 2 s */
+        Snapshot();                          /* module list every second */
         if (gGplr != NULL) {
             held = ((READ_REGISTER_ULONG(gGplr) & VOL_BITS) == 0) ? held + 1 : 0;
             if (held >= 3) KeBugCheckEx(0xE2, 0x60A7B06, 0, 0, 0);
@@ -90,7 +125,7 @@ static VOID SnapshotThread(PVOID Context)
 #define CW (7 * TS)
 #define CH (12 * TS)
 #define COLS (GT_FB_W / CW)
-#define BOX_LINES 11
+#define BOX_LINES 12
 #define BOX_Y (GT_FB_H - BOX_LINES * CH)
 
 static ULONG gCol, gRow;
@@ -117,20 +152,33 @@ static VOID PutHex(PULONG fb, ULONG v, ULONG digits, ULONG fg)
     while (digits--) PutCh(fb, "0123456789ABCDEF"[(v >> (digits * 4)) & 15], fg);
 }
 
+static VOID PutDec(PULONG fb, ULONG v, ULONG fg)
+{
+    char b[11]; ULONG n = 0;
+    do { b[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 10);
+    while (n) PutCh(fb, b[--n], fg);
+}
+
 /* Find the module containing Addr in the snapshot. Returns the file name (or NULL) and the offset. */
 static const char *Lookup(ULONG Addr, PULONG Off)
 {
     LONG a = gActive;
     MODLIST *l;
     ULONG i;
-    if (a < 0 || Addr < 0x80000000UL) return NULL;
-    l = (MODLIST *)gList[a];
-    for (i = 0; i < l->Count && (PUCHAR)&l->M[i + 1] <= gList[a] + LIST_BYTES; i++) {
+    if (Addr < 0x80000000UL) return NULL;
+    l = (a >= 0) ? (MODLIST *)gList[a] : NULL;
+    for (i = 0; l != NULL && i < ListCount(gList[a]); i++) {
         ULONG b = (ULONG)(ULONG_PTR)l->M[i].ImageBase;
         if (Addr >= b && Addr - b < l->M[i].ImageSize) {
             USHORT o = l->M[i].OffsetToFileName;
             *Off = Addr - b;
             return (const char *)l->M[i].FullPathName + (o < 255 ? o : 0);
+        }
+    }
+    for (i = 0; i < GONE_MAX; i++) {
+        if (gGone[i].Base != 0 && Addr >= gGone[i].Base && Addr - gGone[i].Base < gGone[i].Size) {
+            *Off = Addr - gGone[i].Base;
+            return gGone[i].Name;
         }
     }
     return NULL;
@@ -146,6 +194,97 @@ static BOOLEAN PutAddr(PULONG fb, ULONG Addr, ULONG fg)
     PutCh(fb, '+', fg);
     PutHex(fb, off, (off >> 16) ? 6 : 4, fg);
     return TRUE;
+}
+
+static BOOLEAN Valid(ULONG_PTR A, ULONG Len)
+{
+    if (A < 0x80000000UL || A + Len < A) return FALSE;
+    if (!MmIsAddressValid((PVOID)A)) return FALSE;
+    return ((A & (PAGE_SIZE - 1)) + Len <= PAGE_SIZE) || MmIsAddressValid((PVOID)(A + Len - 1));
+}
+
+/* Image containing Addr, found without any list: walk back page by page to an MZ/PE header whose
+   SizeOfImage covers Addr. Name = file name of the PDB path in the CodeView debug entry. Returns the base
+   (0 = none; *Gap = first non-resident page met, 0 if the 8 MB limit was hit). */
+static ULONG FindImage(ULONG Addr, char *Name, ULONG NameLen, PULONG Gap)
+{
+    ULONG b, nt, opt, dbg, dsz, i;
+    *Gap = 0; Name[0] = 0;
+    for (b = Addr & ~(PAGE_SIZE - 1); Addr - b < 0x800000UL && b >= 0x80000000UL; b -= PAGE_SIZE) {
+        if (!MmIsAddressValid((PVOID)(ULONG_PTR)b)) { *Gap = b; return 0; }
+        if (*(volatile USHORT *)b != 0x5A4D) continue;
+        nt = *(volatile ULONG *)(b + 0x3C);
+        if (nt > PAGE_SIZE - 0xF8 || *(volatile ULONG *)(b + nt) != 0x00004550) continue;
+        opt = b + nt + 24;
+        if (*(volatile ULONG *)(opt + 56) <= Addr - b) continue;       /* SizeOfImage */
+        dbg = *(volatile ULONG *)(opt + 96 + 6 * 8);
+        dsz = *(volatile ULONG *)(opt + 96 + 6 * 8 + 4);
+        for (i = 0; dbg != 0 && i + 28 <= dsz && i < 8 * 28; i += 28) {
+            ULONG e = b + dbg + i, rsds, k, last = 0;
+            if (!Valid(e, 28) || *(volatile ULONG *)(e + 12) != 2) continue;   /* CODEVIEW */
+            rsds = b + *(volatile ULONG *)(e + 20);
+            if (!Valid(rsds, 24 + 128) || *(volatile ULONG *)rsds != 0x53445352) continue;  /* 'RSDS' */
+            for (k = 0; k < 128 && ((volatile char *)rsds)[24 + k]; k++)
+                if (((volatile char *)rsds)[24 + k] == '\\') last = k + 1;
+            for (k = 0; k + 1 < NameLen && ((volatile char *)rsds)[24 + last + k]; k++) Name[k] = ((volatile char *)rsds)[24 + last + k];
+            Name[k] = 0;
+            break;
+        }
+        return b;
+    }
+    return 0;
+}
+
+static ULONG gStackStart;
+#define STACK_SCAN (24 * 1024)
+
+/* Exception address details: instruction halfwords, owning image, and the caller from the trap frame /
+   CONTEXT on the stack (the word before Pc is Lr in a CONTEXT, two before in a KTRAP_FRAME). */
+static VOID ExceptionDetails(PULONG fb, ULONG Pc)
+{
+    ULONG a = Pc & ~1UL, base, gap, off, i;
+    ULONG_PTR sp, end;
+    char name[24];
+
+    PutS(fb, "at ", 0x00FFFFFF); PutHex(fb, a, 8, 0x0000FFFF); PutS(fb, ":", 0x00FFFFFF);
+    for (i = 0; i < 5; i++) {
+        ULONG h = a - 4 + i * 2;
+        PutCh(fb, (char)(i == 2 ? '[' : ' '), 0x00FFFFFF);
+        if (Valid(h, 2)) PutHex(fb, *(volatile USHORT *)h, 4, 0x00FFFF00); else PutS(fb, "----", 0x00808080);
+        if (i == 2) PutCh(fb, ']', 0x00FFFFFF);
+    }
+    PutS(fb, "  ", 0);
+    if (Lookup(a, &off) != NULL) PutAddr(fb, a, 0x0000FF00);
+    else {
+        base = FindImage(a, name, sizeof(name), &gap);
+        if (base != 0) {
+            PutS(fb, "img ", 0x00FFFFFF); PutS(fb, name[0] ? name : "?", 0x0000FF00);
+            PutCh(fb, '+', 0x0000FF00); PutHex(fb, a - base, 6, 0x0000FF00);
+        } else {
+            PutS(fb, "no image", 0x00FF6060);
+            if (gap) { PutS(fb, " gap ", 0x00FFFFFF); PutHex(fb, gap, 8, 0x0000FFFF); }
+        }
+    }
+    PutCh(fb, '\n', 0);
+
+    PutS(fb, "caller:", 0x00FFFFFF);
+    sp = gStackStart; end = sp + STACK_SCAN;
+    for (i = 0; sp < end && i < 2; sp += 4) {
+        ULONG v, k;
+        if (((sp & (PAGE_SIZE - 1)) == 0 || sp == gStackStart) && !MmIsAddressValid((PVOID)sp)) break;
+        v = *(volatile ULONG *)sp;
+        if ((v | 1) != (Pc | 1) || sp < gStackStart + 16) continue;
+        for (k = 1; k <= 3; k++) {
+            ULONG lr = *(volatile ULONG *)(sp - 4 * k);
+            if ((lr & 1) && lr >= 0x80000000UL) {
+                PutS(fb, " LR", 0x00FFFFFF); PutCh(fb, (char)('0' + k), 0x00FFFFFF); PutCh(fb, ' ', 0);
+                if (!PutAddr(fb, (lr & ~1UL) - 2, 0x0000FF00)) PutHex(fb, lr, 8, 0x0000FFFF);
+            }
+        }
+        i++;
+    }
+    if (i == 0) PutS(fb, " (no trap frame found)", 0x00808080);
+    PutCh(fb, '\n', 0);
 }
 
 static const char *StopName(ULONG Code)
@@ -170,8 +309,6 @@ static const char *StopName(ULONG Code)
     }
 }
 
-static ULONG gStackStart;
-
 static VOID Draw(PULONG fb)
 {
     ULONG code, p[4], i, hits = 0;
@@ -182,7 +319,21 @@ static VOID Draw(PULONG fb)
 
     GtRect(fb, 0, BOX_Y, GT_FB_W, GT_FB_H - BOX_Y, 0);
     gCol = 0; gRow = 0;
-    PutS(fb, "goyabug  ", 0x00FF40FF); PutS(fb, StopName(code), 0x00FFFFFF); PutCh(fb, '\n', 0);
+    PutS(fb, "goyabug  ", 0x00FF40FF); PutS(fb, StopName(code), 0x00FFFFFF);
+    {
+        ULONG up = (ULONG)(KeQueryInterruptTime() / 10000000ULL);
+        PEPROCESS pr = IoGetCurrentProcess();
+        const char *pn = (pr != NULL) ? (const char *)PsGetProcessImageFileName(pr) : NULL;
+        PutS(fb, "  up ", 0x00FFFFFF); PutDec(fb, up, 0x0000FFFF); PutS(fb, "s", 0x00FFFFFF);
+        if (pn != NULL && Valid((ULONG_PTR)pn, 15)) { PutS(fb, "  ", 0); PutS(fb, pn, 0x00FFFFFF); }
+        if (gActive >= 0) {
+            ULONG c = ListCount(gList[gActive]);
+            MODINFO *m = &((MODLIST *)gList[gActive])->M[c ? c - 1 : 0];
+            USHORT o = m->OffsetToFileName;
+            PutS(fb, "  last ", 0x00FFFFFF); if (c) PutS(fb, (const char *)m->FullPathName + (o < 255 ? o : 0), 0x00C0C0C0);
+        }
+    }
+    PutCh(fb, '\n', 0);
     PutS(fb, "STOP ", 0x00FFFFFF); PutHex(fb, code, 8, 0x00FFFF00);
     for (i = 0; i < 4; i++) {
         PutS(fb, "  P", 0x00FFFFFF); PutCh(fb, (char)('1' + i), 0x00FFFFFF); PutCh(fb, ' ', 0);
@@ -199,6 +350,10 @@ static VOID Draw(PULONG fb)
     }
     if (hits) PutCh(fb, '\n', 0);
 
+    /* Exception stops: P2 is the exception address */
+    if (code == 0x1E || code == 0x1000001E || code == 0x7E || code == 0x1000007E || code == 0x8E || code == 0x1000008E)
+        ExceptionDetails(fb, p[1]);
+
     /* SYSTEM_THREAD_EXCEPTION_NOT_HANDLED: P3 = exception record, P4 = context record */
     if ((code == 0x7E || code == 0x1000007E) && p[3] >= 0x80000000UL && MmIsAddressValid((PVOID)(ULONG_PTR)p[3])) {
         PCONTEXT ctx = (PCONTEXT)(ULONG_PTR)p[3];
@@ -213,9 +368,9 @@ static VOID Draw(PULONG fb)
        Pages are checked before they are read, so the scan stops at the end of the stack. */
     PutS(fb, "stack:", 0x00FFFFFF);
     sp = gStackStart;
-    end = sp + 16 * 1024;
+    end = sp + STACK_SCAN;
     hits = 0;
-    for (; sp < end && hits < 21 && gRow < BOX_LINES; sp += 4) {
+    for (; sp < end && hits < 14 && gRow < BOX_LINES; sp += 4) {
         ULONG v, off;
         if ((sp & (PAGE_SIZE - 1)) == 0 || sp == gStackStart) {
             if (!MmIsAddressValid((PVOID)sp)) break;

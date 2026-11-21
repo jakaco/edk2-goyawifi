@@ -112,7 +112,7 @@ flash a stock/LineageOS `boot.img` to `KERNEL`.
 | Windows kernel fixes | WinKernelFixupDxe | at ExitBootServices: stops the 8520 kernel from touching the locked CP14 debug registers; takes a pending asynchronous abort (marker in the bottom-right corner) |
 | Touch supply | Pxa988SdhciDxe | 88PM822 LDO1 (touch vdd) set to 2.8 V and switched on if S-Boot left it off |
 | USB device | Pxa988UsbDxe (UsbGadget.c) | CDC-ACM serial console (VID 1209 / PID 0001) when the core refuses host mode |
-| DVFS | Pxa988DvfsDxe | one-shot move to 1066 MHz (PLL2), `PcdDvfsEnable` |
+| DVFS | Pxa988DvfsDxe | one-shot move to 1066 MHz (PLL2), `PcdDvfsEnable`; **off in the Windows RT build** (`tools/build-winrt.sh`, `GOYA_DVFS=1` keeps it): Windows has no frequency or thermal control here |
 | Charging | GoyaWifiChargerDxe | SMB328 at 500 mA while UEFI runs |
 
 Not implemented: EFI_MP_SERVICES (CPU1 is only self-tested), VBUS switching,
@@ -226,6 +226,16 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
 * Full Windows RT install on microSD (`install-winrt-sd.cmd`).
 * Whether the random early stop is completely gone (one more since the timer
   fix, before the async-abort check).
+
+**Under investigation**
+
+* Random KMODE_EXCEPTION_NOT_HANDLED with C000001D (illegal instruction) while
+  WinPE runs with touch working, at an address outside every loaded module
+  (seen once: 82C584E3). Suspects: the 1066 MHz / 1.175 V operating point
+  (DVFS is now off in the Windows firmware build) or a jump into freed or
+  non-code memory. goyabug now shows the instruction bytes, the owning image
+  (by its PDB name, also for images missing from the module list), unloaded
+  drivers, the caller from the trap frame, uptime and the current process.
 
 **Not available**
 

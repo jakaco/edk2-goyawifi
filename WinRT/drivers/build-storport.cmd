@@ -22,6 +22,8 @@ dumpbin /nologo /imports %N%.sys
 rem No NEON/VFP: the Windows 8 ARM kernel does not enable it for kernel-mode code
 dumpbin /nologo /disasm %N%.sys > %N%.dis
 findstr /r /c:" vld" /c:" vst" /c:" vmov" /c:" vdup" /c:" vmrs" /c:" vmsr" %N%.dis && (echo ERROR: %N%.sys contains VFP/NEON instructions & exit /b 1)
+rem No hardware divide: the PXA988 Cortex-A9 has no SDIV/UDIV (undefined instruction, C000001D)
+findstr /r /c:" sdiv" /c:" udiv" %N%.dis && (echo ERROR: %N%.sys contains SDIV/UDIV & exit /b 1)
 echo built %N%.sys
 exit /b 0
 
