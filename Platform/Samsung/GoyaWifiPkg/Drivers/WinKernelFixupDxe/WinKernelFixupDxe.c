@@ -27,6 +27,15 @@
   (it stays visible behind the Windows logo and the stop screen):
     green  = both sites patched      yellow = only one site found
     red    = not found (other kernel build or not Windows)
+    cyan   = both sites patched, and an asynchronous abort was pending and has been taken here
+    blue   = both sites patched, an asynchronous abort is pending and could not be taken here
+
+  Asynchronous (imprecise) aborts: a RELEASE firmware runs with them masked (ArmPkg CpuDxe only
+  unmasks them in DEBUG builds), so a bus error caused by firmware code stays pending and is
+  delivered the moment the OS unmasks aborts - early in the kernel, before the HAL timer is set
+  up, as KMODE_EXCEPTION_NOT_HANDLED. That matches the intermittent early stop seen with WinPE.
+  At ExitBootServices this driver reads ISR.A and, if an abort is pending, unmasks aborts for a
+  moment with its own Data Abort handler installed so the abort is consumed here.
 
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
@@ -38,6 +47,62 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PcdLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Protocol/Cpu.h>
+#include <Protocol/DebugSupport.h>
+
+UINT32 GoyaReadIsr (VOID);
+UINT32 GoyaReadCpsr (VOID);
+UINT32 GoyaReadDfsr (VOID);
+VOID   GoyaTakeAsyncAbort (VOID);
+
+STATIC EFI_CPU_ARCH_PROTOCOL  *mCpu;
+STATIC volatile UINT32        mAbortTaken;
+STATIC volatile UINT32        mAbortDfsr;
+
+/**
+  Data Abort handler used only around GoyaTakeAsyncAbort: note the abort and return to its caller
+  with asynchronous aborts masked again (CPSR.A), Thumb state from lr.
+**/
+STATIC
+VOID
+EFIAPI
+AsyncAbortHandler (
+  IN EFI_EXCEPTION_TYPE  ExceptionType,
+  IN EFI_SYSTEM_CONTEXT  SystemContext
+  )
+{
+  EFI_SYSTEM_CONTEXT_ARM  *Ctx = SystemContext.SystemContextArm;
+
+  mAbortTaken++;
+  mAbortDfsr = GoyaReadDfsr ();
+  Ctx->CPSR  = (Ctx->CPSR & ~(UINT32)(0x20 | 0x0600FC00)) | 0x100 | ((Ctx->LR & 1) ? 0x20 : 0);
+  Ctx->PC    = Ctx->LR & ~(UINT32)1;
+}
+
+/**
+  Returns 0 = no abort pending, 1 = a pending abort was taken here, 2 = pending, could not take it.
+**/
+STATIC
+UINTN
+FlushAsyncAbort (
+  VOID
+  )
+{
+  UINTN  Result;
+
+  if ((GoyaReadIsr () & BIT8) == 0) {
+    return 0;
+  }
+  if ((mCpu == NULL) || EFI_ERROR (mCpu->RegisterInterruptHandler (mCpu, EXCEPT_ARM_DATA_ABORT, AsyncAbortHandler))) {
+    return 2;
+  }
+  mAbortTaken = 0;
+  GoyaTakeAsyncAbort ();
+  mCpu->RegisterInterruptHandler (mCpu, EXCEPT_ARM_DATA_ABORT, NULL);
+  Result = ((mAbortTaken != 0) && ((GoyaReadIsr () & BIT8) == 0)) ? 1 : 2;
+  DEBUG ((DEBUG_WARN, "WinKernelFixup: pending asynchronous abort %a (DFSR 0x%x)\n", (Result == 1) ? "taken" : "NOT cleared", mAbortDfsr));
+  return Result;
+}
 
 typedef struct {
   CONST CHAR8    *Name;
@@ -144,6 +209,7 @@ OnExitBootServices (
   UINTN                  Found[SITE_COUNT];
   UINTN                  S;
   UINTN                  Sites = 0;
+  UINTN                  Abort;
 
   ZeroMem (Found, sizeof (Found));
   if ((mMap == NULL) || EFI_ERROR (gBS->GetMemoryMap (&MapSize, mMap, &MapKey, &DescSize, &DescVer))) {
@@ -167,7 +233,12 @@ OnExitBootServices (
     Sites += (Found[S] != 0) ? 1 : 0;
   }
 
-  DrawMarker ((Sites == SITE_COUNT) ? 0x0000FF00 : (Sites != 0) ? 0x00FFFF00 : 0x00FF0000);
+  Abort = FlushAsyncAbort ();
+  if (Sites != SITE_COUNT) {
+    DrawMarker ((Sites != 0) ? 0x00FFFF00 : 0x00FF0000);
+  } else {
+    DrawMarker ((Abort == 0) ? 0x0000FF00 : (Abort == 1) ? 0x0000FFFF : 0x000000FF);
+  }
 }
 
 EFI_STATUS
@@ -186,6 +257,7 @@ WinKernelFixupDxeEntry (
   gBS->GetMemoryMap (&MapSize, NULL, &MapKey, &DescSize, &DescVer);
   mMapBufferSize = MapSize + 256 * DescSize;
   mMap           = AllocateRuntimePool (mMapBufferSize);
+  gBS->LocateProtocol (&gEfiCpuArchProtocolGuid, NULL, (VOID **)&mCpu);
 
   return gBS->CreateEvent (
                 EVT_SIGNAL_EXIT_BOOT_SERVICES,

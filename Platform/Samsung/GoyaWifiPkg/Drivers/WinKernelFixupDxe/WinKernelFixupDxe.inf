@@ -16,6 +16,9 @@
 [Sources]
   WinKernelFixupDxe.c
 
+[Sources.ARM]
+  AsyncAbort.S
+
 [Packages]
   MdePkg/MdePkg.dec
   Silicon/Marvell/Pxa988Pkg/Pxa988Pkg.dec
@@ -35,5 +38,8 @@
   gPxa988TokenSpaceGuid.PcdFrameBufferHeight
   gPxa988TokenSpaceGuid.PcdFrameBufferStride
 
+[Protocols]
+  gEfiCpuArchProtocolGuid
+
 [Depex]
-  TRUE
+  gEfiCpuArchProtocolGuid
