@@ -87,22 +87,9 @@ static const UCHAR gReportDesc[] = {
     0x85, 0x02,             /*  Report ID (2) */
     0x09, 0x55,             /*  Usage (Contact Count Maximum) */
     0x25, 0x05, 0xB1, 0x02,
-    0xC0,
-    /* Report 3: absolute mouse (first finger = pointer + left button). WinPE and anything without
-       touch support still get a working pointer. */
-    0x05, 0x01,             /* Usage Page (Generic Desktop) */
-    0x09, 0x02,             /* Usage (Mouse) */
-    0xA1, 0x01,             /* Collection (Application) */
-    0x85, 0x03,             /*  Report ID (3) */
-    0x09, 0x01,             /*  Usage (Pointer) */
-    0xA1, 0x00,             /*  Collection (Physical) */
-    0x05, 0x09, 0x19, 0x01, 0x29, 0x01, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02,
-    0x75, 0x07, 0x95, 0x01, 0x81, 0x03,
-    0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
-    0x16, 0x00, 0x00, 0x26, 0xFF, 0x7F,     /*   Logical 0..32767 (scaled from the panel) */
-    0x75, 0x10, 0x95, 0x02, 0x81, 0x02,     /*   X, Y absolute */
-    0xC0,
     0xC0
+    /* An absolute mouse collection (report 3) here coincided with KMODE_EXCEPTION_NOT_HANDLED
+       on 8520 WinPE; build with GOYA_TOUCH_MOUSE=1 and add it back to experiment. */
 };
 
 #pragma pack(push, 1)
@@ -282,8 +269,9 @@ static VOID PollOnce(PGOYA_TOUCH T)
     }
     rep.Count = (UCHAR)count;
     if (count || T->PrevActive) {
-        MOUSE_REPORT m;
         HidMiniReport(T->Device, (const UCHAR *)&rep, sizeof(rep));
+#if GOYA_TOUCH_MOUSE
+        MOUSE_REPORT m;
         /* pointer follows the first finger that is down; button up when none is */
         m.Id = 3;
         m.Buttons = 0;
@@ -298,6 +286,7 @@ static VOID PollOnce(PGOYA_TOUCH T)
             }
         }
         HidMiniReport(T->Device, (const UCHAR *)&m, sizeof(m));
+#endif
     }
     T->PrevActive = active;
     ZCmd(T, Z_CLEAR_INT);
