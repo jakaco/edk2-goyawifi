@@ -88,17 +88,7 @@ static const UCHAR gReportDesc[] = {
     0x09, 0x55,             /*  Usage (Contact Count Maximum) */
     0x25, 0x05, 0xB1, 0x02,
     0xC0
-    /* An absolute mouse collection (report 3) here coincided with KMODE_EXCEPTION_NOT_HANDLED
-       on 8520 WinPE; build with GOYA_TOUCH_MOUSE=1 and add it back to experiment. */
 };
-
-#pragma pack(push, 1)
-typedef struct _MOUSE_REPORT {
-    UCHAR  Id;              /* 3 */
-    UCHAR  Buttons;
-    USHORT X, Y;            /* 0..32767 */
-} MOUSE_REPORT;
-#pragma pack(pop)
 
 #pragma pack(push, 1)
 typedef struct _TOUCH_REPORT {
@@ -117,7 +107,6 @@ typedef struct _GOYA_TOUCH {
     ULONG     RetryTicks;
     LONG      InTimer;
     UCHAR     PrevActive;           /* bitmask of fingers that were down in the last report */
-    USHORT    MouseX, MouseY;       /* last pointer position (report 3) */
 } GOYA_TOUCH, *PGOYA_TOUCH;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GOYA_TOUCH, GetTouch)
 
@@ -203,7 +192,6 @@ static NTSTATUS ZInitChip(PGOYA_TOUCH T)
     CHK(ZReadU16(T, Z_FW_VERSION, &fw));
     CHK(ZReadU16(T, Z_DATA_VERSION, &dv));
     DbgPrint("goyatouch: chip code %04x revision %04x firmware %04x data %04x\n", chip_code, rev, fw, dv);
-    GoyaTraceValue(1, ((ULONG)chip_code << 16) | fw);   /* 5 1 <chip code><firmware> */
 
     CHK(ZWriteU16(T, Z_INT_ENABLE, 0));
     CHK(ZCmd(T, Z_SWRESET));
@@ -270,23 +258,6 @@ static VOID PollOnce(PGOYA_TOUCH T)
     rep.Count = (UCHAR)count;
     if (count || T->PrevActive) {
         HidMiniReport(T->Device, (const UCHAR *)&rep, sizeof(rep));
-#if GOYA_TOUCH_MOUSE
-        MOUSE_REPORT m;
-        /* pointer follows the first finger that is down; button up when none is */
-        m.Id = 3;
-        m.Buttons = 0;
-        m.X = T->MouseX;
-        m.Y = T->MouseY;
-        for (i = 0; i < count; i++) {
-            if (rep.F[i].Tip) {
-                m.Buttons = 1;
-                m.X = T->MouseX = (USHORT)((ULONG)rep.F[i].X * 32767 / OUT_MAX_X);
-                m.Y = T->MouseY = (USHORT)((ULONG)rep.F[i].Y * 32767 / OUT_MAX_Y);
-                break;
-            }
-        }
-        HidMiniReport(T->Device, (const UCHAR *)&m, sizeof(m));
-#endif
     }
     T->PrevActive = active;
     ZCmd(T, Z_CLEAR_INT);
@@ -300,14 +271,10 @@ static VOID OnTimer_(WDFTIMER Timer)
     if (!T->Running) return;
     if (InterlockedExchange(&T->InTimer, 1)) return;           /* a slow poll must not overlap */
 
-    if (!SpbTgtOpen(dev, &T->Spb)) {
-        GoyaTraceValue(0, 0xDEAD0001);                         /* 5 0 DEAD0001: I2C target cannot be opened */
-    } else {
+    if (SpbTgtOpen(dev, &T->Spb)) {
         if (!T->Initialized) {
             if (T->RetryTicks++ % 32 == 0) {                   /* about every 0.5 s */
-                NTSTATUS ist = ZInitChip(T);
-            GoyaTraceValue(0, (ULONG)ist);          /* 5 0 <status>: 00000000 = touch chip initialised */
-            if (NT_SUCCESS(ist)) { T->Initialized = TRUE; T->PrevActive = 0; }
+                if (NT_SUCCESS(ZInitChip(T))) { T->Initialized = TRUE; T->PrevActive = 0; }
             }
         } else {
             PollOnce(T);
