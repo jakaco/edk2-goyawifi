@@ -433,12 +433,14 @@ static VOID PollOnce(DEV_EXT *E)
 {
     UCHAR raw[4 + 6 * NFINGERS];
     USHORT status;
+    BOOLEAN intLow;
     BOOLEAN down = FALSE;
     LONG x = E->LastX, y = E->LastY;
     int i;
 
     gPolls++;
-    if (gGpio != NULL && !(READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR)) & GPIO94_BIT)) gIntLow++;
+    intLow = (BOOLEAN)(gGpio != NULL && !(READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR)) & GPIO94_BIT));
+    if (intLow) gIntLow++;
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
         gReadFails++;
         E->Initialized = FALSE;                             /* chip lost: re-initialise */
@@ -446,7 +448,12 @@ static VOID PollOnce(DEV_EXT *E)
     }
     status = (USHORT)(raw[0] | (raw[1] << 8));
     gRaw4 = ((ULONG)raw[0] << 24) | ((ULONG)raw[1] << 16) | ((ULONG)raw[2] << 8) | raw[3];
-    if (status == 0) return;                                /* nothing new */
+    if (status == 0) {
+        /* The vendor interrupt handler always ends with CLEAR_INT, also when the status is 0. The chip
+           keeps INT asserted (and stops reporting) until it is cleared, so clear whenever INT is low. */
+        if (intLow) ZCmd(E, Z_CLEAR_INT);
+        return;
+    }
     gNonZero++;
     gLastStatus = status;
     gLastSub = raw[4 + 5];
@@ -588,7 +595,9 @@ static VOID SetIntPin(VOID)
     if (m != NULL) {
         ULONG v = READ_REGISTER_ULONG(m);
         gIntInfo = v << 16;                                  /* MFPR as found */
-        if ((v & 7) != 0) WRITE_REGISTER_ULONG(m, v & ~7UL);
+        /* AF0 (GPIO) + pull-up (PULL_SEL bit 15, PULLUP_EN bit 14, no pull-down bit 13): the line is
+           active low; without a pull it can read low all the time */
+        WRITE_REGISTER_ULONG(m, (v & ~(7UL | 0xE000UL)) | 0xC000UL);
         MmUnmapIoSpace(m, 4);
     }
     if (gGpio != NULL) WRITE_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GCDR), GPIO94_BIT);
