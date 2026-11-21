@@ -87,8 +87,31 @@ static const UCHAR gReportDesc[] = {
     0x85, 0x02,             /*  Report ID (2) */
     0x09, 0x55,             /*  Usage (Contact Count Maximum) */
     0x25, 0x05, 0xB1, 0x02,
+    0xC0,
+    /* Report 3: absolute mouse (first finger = pointer + left button). WinPE and anything without
+       touch support still get a working pointer. */
+    0x05, 0x01,             /* Usage Page (Generic Desktop) */
+    0x09, 0x02,             /* Usage (Mouse) */
+    0xA1, 0x01,             /* Collection (Application) */
+    0x85, 0x03,             /*  Report ID (3) */
+    0x09, 0x01,             /*  Usage (Pointer) */
+    0xA1, 0x00,             /*  Collection (Physical) */
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x01, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02,
+    0x75, 0x07, 0x95, 0x01, 0x81, 0x03,
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
+    0x16, 0x00, 0x00, 0x26, 0xFF, 0x7F,     /*   Logical 0..32767 (scaled from the panel) */
+    0x75, 0x10, 0x95, 0x02, 0x81, 0x02,     /*   X, Y absolute */
+    0xC0,
     0xC0
 };
+
+#pragma pack(push, 1)
+typedef struct _MOUSE_REPORT {
+    UCHAR  Id;              /* 3 */
+    UCHAR  Buttons;
+    USHORT X, Y;            /* 0..32767 */
+} MOUSE_REPORT;
+#pragma pack(pop)
 
 #pragma pack(push, 1)
 typedef struct _TOUCH_REPORT {
@@ -107,6 +130,7 @@ typedef struct _GOYA_TOUCH {
     ULONG     RetryTicks;
     LONG      InTimer;
     UCHAR     PrevActive;           /* bitmask of fingers that were down in the last report */
+    USHORT    MouseX, MouseY;       /* last pointer position (report 3) */
 } GOYA_TOUCH, *PGOYA_TOUCH;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GOYA_TOUCH, GetTouch)
 
@@ -192,6 +216,7 @@ static NTSTATUS ZInitChip(PGOYA_TOUCH T)
     CHK(ZReadU16(T, Z_FW_VERSION, &fw));
     CHK(ZReadU16(T, Z_DATA_VERSION, &dv));
     DbgPrint("goyatouch: chip code %04x revision %04x firmware %04x data %04x\n", chip_code, rev, fw, dv);
+    GoyaTraceValue(1, ((ULONG)chip_code << 16) | fw);   /* 5 1 <chip code><firmware> */
 
     CHK(ZWriteU16(T, Z_INT_ENABLE, 0));
     CHK(ZCmd(T, Z_SWRESET));
@@ -257,7 +282,22 @@ static VOID PollOnce(PGOYA_TOUCH T)
     }
     rep.Count = (UCHAR)count;
     if (count || T->PrevActive) {
+        MOUSE_REPORT m;
         HidMiniReport(T->Device, (const UCHAR *)&rep, sizeof(rep));
+        /* pointer follows the first finger that is down; button up when none is */
+        m.Id = 3;
+        m.Buttons = 0;
+        m.X = T->MouseX;
+        m.Y = T->MouseY;
+        for (i = 0; i < count; i++) {
+            if (rep.F[i].Tip) {
+                m.Buttons = 1;
+                m.X = T->MouseX = (USHORT)((ULONG)rep.F[i].X * 32767 / OUT_MAX_X);
+                m.Y = T->MouseY = (USHORT)((ULONG)rep.F[i].Y * 32767 / OUT_MAX_Y);
+                break;
+            }
+        }
+        HidMiniReport(T->Device, (const UCHAR *)&m, sizeof(m));
     }
     T->PrevActive = active;
     ZCmd(T, Z_CLEAR_INT);
@@ -271,10 +311,14 @@ static VOID OnTimer_(WDFTIMER Timer)
     if (!T->Running) return;
     if (InterlockedExchange(&T->InTimer, 1)) return;           /* a slow poll must not overlap */
 
-    if (SpbTgtOpen(dev, &T->Spb)) {
+    if (!SpbTgtOpen(dev, &T->Spb)) {
+        GoyaTraceValue(0, 0xDEAD0001);                         /* 5 0 DEAD0001: I2C target cannot be opened */
+    } else {
         if (!T->Initialized) {
             if (T->RetryTicks++ % 32 == 0) {                   /* about every 0.5 s */
-                if (NT_SUCCESS(ZInitChip(T))) { T->Initialized = TRUE; T->PrevActive = 0; }
+                NTSTATUS ist = ZInitChip(T);
+            GoyaTraceValue(0, (ULONG)ist);          /* 5 0 <status>: 00000000 = touch chip initialised */
+            if (NT_SUCCESS(ist)) { T->Initialized = TRUE; T->PrevActive = 0; }
             }
         } else {
             PollOnce(T);
