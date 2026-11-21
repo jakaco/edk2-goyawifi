@@ -76,7 +76,7 @@
     0x05, 0x0D,             /*  Usage Page (Digitizer) */ \
     0xC0
 
-static const UCHAR gReportDesc[] = {
+static const UCHAR gTouchDesc[] = {
     0x05, 0x0D,             /* Usage Page (Digitizer) */
     0x09, 0x04,             /* Usage (Touch Screen) */
     0xA1, 0x01,             /* Collection (Application) */
@@ -89,6 +89,42 @@ static const UCHAR gReportDesc[] = {
     0x25, 0x05, 0xB1, 0x02,
     0xC0
 };
+
+/* Absolute mouse, report 3: the first finger moves the pointer and holds the left button (the same
+   idea as the WDK Elotouch sample's mouse mode). WinPE has no touch input, but every Windows has a
+   mouse. Self-contained: all global items are set here, nothing is inherited from another collection. */
+#define MOUSE_COLLECTION \
+    0x05, 0x01,             /* Usage Page (Generic Desktop) */      \
+    0x09, 0x02,             /* Usage (Mouse) */                     \
+    0xA1, 0x01,             /* Collection (Application) */          \
+    0x85, 0x03,             /*  Report ID (3) */                    \
+    0x09, 0x01,             /*  Usage (Pointer) */                  \
+    0xA1, 0x00,             /*  Collection (Physical) */            \
+    0x05, 0x09,             /*   Usage Page (Button) */             \
+    0x19, 0x01, 0x29, 0x01, /*   Usage Minimum/Maximum (1) */       \
+    0x15, 0x00, 0x25, 0x01, /*   Logical 0..1 */                    \
+    0x35, 0x00, 0x45, 0x00, /*   Physical 0..0 */                   \
+    0x65, 0x00, 0x55, 0x00, /*   No unit, exponent 0 */             \
+    0x75, 0x01, 0x95, 0x01, 0x81, 0x02,     /* 1 button bit */      \
+    0x75, 0x07, 0x95, 0x01, 0x81, 0x03,     /* 7 padding bits */    \
+    0x05, 0x01,             /*   Usage Page (Generic Desktop) */    \
+    0x09, 0x30, 0x09, 0x31, /*   Usage X, Y */                      \
+    0x16, 0x00, 0x00, 0x26, 0xFF, 0x7F,     /* Logical 0..32767 */  \
+    0x75, 0x10, 0x95, 0x02, 0x81, 0x02,     /* X, Y: 16 bit, absolute */ \
+    0xC0,                                                           \
+    0xC0
+
+/* Default (WinPE): mouse only. Registry value TouchScreen=1 under the device's Device Parameters
+   key selects touch screen + mouse for a full Windows RT install. */
+static const UCHAR gMouseDesc[] = { MOUSE_COLLECTION };
+
+#pragma pack(push, 1)
+typedef struct _MOUSE_REPORT {
+    UCHAR  Id;              /* 3 */
+    UCHAR  Buttons;         /* bit 0 = left */
+    USHORT X, Y;            /* 0..32767 */
+} MOUSE_REPORT;
+#pragma pack(pop)
 
 #pragma pack(push, 1)
 typedef struct _TOUCH_REPORT {
@@ -107,6 +143,10 @@ typedef struct _GOYA_TOUCH {
     ULONG     RetryTicks;
     LONG      InTimer;
     UCHAR     PrevActive;           /* bitmask of fingers that were down in the last report */
+    BOOLEAN   TouchScreen;          /* also report as a touch screen (registry TouchScreen=1) */
+    BOOLEAN   MouseDown;            /* last mouse button state sent */
+    USHORT    MouseX, MouseY;       /* last pointer position */
+    UCHAR     Desc[512];            /* report descriptor in use */
 } GOYA_TOUCH, *PGOYA_TOUCH;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GOYA_TOUCH, GetTouch)
 
@@ -257,7 +297,24 @@ static VOID PollOnce(PGOYA_TOUCH T)
     }
     rep.Count = (UCHAR)count;
     if (count || T->PrevActive) {
-        HidMiniReport(T->Device, (const UCHAR *)&rep, sizeof(rep));
+        MOUSE_REPORT m;
+        if (T->TouchScreen) HidMiniReport(T->Device, (const UCHAR *)&rep, sizeof(rep));
+
+        /* mouse: the first finger that is down moves the pointer and holds the left button */
+        m.Id = 3;
+        m.Buttons = 0;
+        for (i = 0; i < count; i++) {
+            if (rep.F[i].Tip) {
+                m.Buttons = 1;
+                T->MouseX = (USHORT)((ULONG)rep.F[i].X * 32767 / (OUT_MAX_X - 1));
+                T->MouseY = (USHORT)((ULONG)rep.F[i].Y * 32767 / (OUT_MAX_Y - 1));
+                break;
+            }
+        }
+        m.X = T->MouseX;
+        m.Y = T->MouseY;
+        if (m.Buttons || T->MouseDown) HidMiniReport(T->Device, (const UCHAR *)&m, sizeof(m));
+        T->MouseDown = (BOOLEAN)(m.Buttons != 0);
     }
     T->PrevActive = active;
     ZCmd(T, Z_CLEAR_INT);
@@ -411,13 +468,33 @@ static NTSTATUS OnDeviceAdd_(WDFDRIVER Driver, PWDFDEVICE_INIT Init)
     T = GetTouch(dev);
     T->Device = dev;
 
+    /* mouse only, unless Device Parameters\TouchScreen = 1 (touch screen + mouse) */
+    {
+        WDFKEY key;
+        ULONG v = 0;
+        DECLARE_CONST_UNICODE_STRING(name, L"TouchScreen");
+        if (NT_SUCCESS(WdfDeviceOpenRegistryKey(dev, PLUGPLAY_REGKEY_DEVICE, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key))) {
+            if (!NT_SUCCESS(WdfRegistryQueryULong(key, &name, &v))) v = 0;
+            WdfRegistryClose(key);
+        }
+        T->TouchScreen = (BOOLEAN)(v != 0);
+    }
     RtlZeroMemory(&hc, sizeof(hc));
-    hc.ReportDescriptor = gReportDesc;
-    hc.ReportDescriptorLength = sizeof(gReportDesc);
+    if (T->TouchScreen) {
+        C_ASSERT(sizeof(gTouchDesc) + sizeof(gMouseDesc) <= sizeof(((PGOYA_TOUCH)0)->Desc));
+        RtlCopyMemory(T->Desc, gTouchDesc, sizeof(gTouchDesc));
+        RtlCopyMemory(T->Desc + sizeof(gTouchDesc), gMouseDesc, sizeof(gMouseDesc));
+        hc.ReportDescriptor = T->Desc;
+        hc.ReportDescriptorLength = sizeof(gTouchDesc) + sizeof(gMouseDesc);
+        hc.GetFeature = OnGetFeature;
+    } else {
+        hc.ReportDescriptor = gMouseDesc;
+        hc.ReportDescriptorLength = sizeof(gMouseDesc);
+        hc.GetFeature = NULL;
+    }
     hc.VendorId = 0x1FC9;                              /* arbitrary: "Goya" */
     hc.ProductId = 0x0532;
-    hc.VersionNumber = 0x0001;
-    hc.GetFeature = OnGetFeature;
+    hc.VersionNumber = 0x0002;
     hc.Ctx = T;
     st = HidMiniCreate(dev, &hc);
     if (!NT_SUCCESS(st)) return st;

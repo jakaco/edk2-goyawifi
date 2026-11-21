@@ -33,6 +33,8 @@ AddReg = Touch_AddReg
 
 [Touch_AddReg]
 HKR,,"LowerFilters",0x00010000,"goyatouch"
+; 0 = absolute mouse only (works in WinPE), 1 = touch screen + mouse (full Windows RT)
+HKR,"Device Parameters","TouchScreen",0x00010003,0
 
 [Touch_Inst.NT.Services]
 AddService = goyatouch,,Touch_Service_Inst
