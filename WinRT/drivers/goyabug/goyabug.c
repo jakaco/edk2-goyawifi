@@ -136,20 +136,40 @@ static BOOLEAN PutAddr(PULONG fb, ULONG Addr, ULONG fg)
     return TRUE;
 }
 
-static VOID BugCheckCallback(PVOID Buffer, ULONG Length)
+static const char *StopName(ULONG Code)
 {
-    PULONG fb = gGtFb;
+    switch (Code) {
+    case 0x0A: return "IRQL_NOT_LESS_OR_EQUAL";
+    case 0x1E: case 0x1000001E: return "KMODE_EXCEPTION_NOT_HANDLED";
+    case 0x3B: return "SYSTEM_SERVICE_EXCEPTION";
+    case 0x50: return "PAGE_FAULT_IN_NONPAGED_AREA";
+    case 0x5C: return "HAL_INITIALIZATION_FAILED";
+    case 0x7B: return "INACCESSIBLE_BOOT_DEVICE";
+    case 0x7E: case 0x1000007E: return "SYSTEM_THREAD_EXCEPTION_NOT_HANDLED";
+    case 0x7F: return "UNEXPECTED_KERNEL_MODE_TRAP";
+    case 0x8E: case 0x1000008E: return "KERNEL_MODE_EXCEPTION_NOT_HANDLED";
+    case 0x9F: return "DRIVER_POWER_STATE_FAILURE";
+    case 0xC4: return "DRIVER_VERIFIER_DETECTED_VIOLATION";
+    case 0xD1: return "DRIVER_IRQL_NOT_LESS_OR_EQUAL";
+    case 0x133: return "DPC_WATCHDOG_VIOLATION";
+    case 0x139: return "KERNEL_SECURITY_CHECK_FAILURE";
+    default: return "";
+    }
+}
+
+static ULONG gStackStart;
+
+static VOID Draw(PULONG fb)
+{
     ULONG code, p[4], i, hits = 0;
     ULONG_PTR sp, end;
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(Length);
 
-    if (fb == NULL || gBugData == NULL) return;
     code = (ULONG)gBugData[0];
     for (i = 0; i < 4; i++) p[i] = (ULONG)gBugData[i + 1];
 
     GtRect(fb, 0, BOX_Y, GT_FB_W, GT_FB_H - BOX_Y, 0);
     gCol = 0; gRow = 0;
+    PutS(fb, "goyabug  ", 0x00FF40FF); PutS(fb, StopName(code), 0x00FFFFFF); PutCh(fb, '\n', 0);
     PutS(fb, "STOP ", 0x00FFFFFF); PutHex(fb, code, 8, 0x00FFFF00);
     for (i = 0; i < 4; i++) {
         PutS(fb, "  P", 0x00FFFFFF); PutCh(fb, (char)('1' + i), 0x00FFFFFF); PutCh(fb, ' ', 0);
@@ -179,12 +199,12 @@ static VOID BugCheckCallback(PVOID Buffer, ULONG Length)
     /* Heuristic call chain: odd words (Thumb return addresses) on this stack that lie in a module.
        Pages are checked before they are read, so the scan stops at the end of the stack. */
     PutS(fb, "stack:", 0x00FFFFFF);
-    sp = (ULONG_PTR)&code & ~3UL;
+    sp = gStackStart;
     end = sp + 16 * 1024;
     hits = 0;
     for (; sp < end && hits < 21 && gRow < BOX_LINES; sp += 4) {
         ULONG v, off;
-        if ((sp & (PAGE_SIZE - 1)) == 0 || sp == ((ULONG_PTR)&code & ~3UL)) {
+        if ((sp & (PAGE_SIZE - 1)) == 0 || sp == gStackStart) {
             if (!MmIsAddressValid((PVOID)sp)) break;
         }
         v = *(volatile ULONG *)sp;
@@ -193,6 +213,26 @@ static VOID BugCheckCallback(PVOID Buffer, ULONG Length)
         PutCh(fb, ' ', 0);
         PutAddr(fb, (v & ~1UL) - 2, (hits & 1) ? 0x00C0C0C0 : 0x00FFFFFF);   /* -2: the call, not the return */
         hits++;
+    }
+}
+
+/* Runs at HIGH_LEVEL during the stop. Marks entry first (magenta bar, bottom right), then draws the box
+   and keeps redrawing it: the stop screen may be painted or updated after the callbacks run. Never
+   returns (no dump is written on this device anyway; AutoReboot is off). */
+static VOID BugCheckCallback(PVOID Buffer, ULONG Length)
+{
+    PULONG fb = gGtFb;
+    ULONG local;
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(Length);
+
+    if (fb == NULL) return;
+    GtRect(fb, GT_FB_W - 64, GT_FB_H - 8, 64, 8, 0x00FF00FF);
+    if (gBugData == NULL) return;
+    gStackStart = (ULONG)(ULONG_PTR)&local & ~3UL;
+    for (;;) {
+        Draw(fb);
+        KeStallExecutionProcessor(500000);
     }
 }
 

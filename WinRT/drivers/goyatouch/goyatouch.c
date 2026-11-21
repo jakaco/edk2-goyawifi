@@ -1,61 +1,34 @@
-/* Zinitix BT532 touchscreen (Samsung SM-T110) as a HID absolute mouse - WDM HID minidriver.
+/* Zinitix BT532 touchscreen (Samsung SM-T110) as an absolute mouse - WDM mouse port driver.
 
-   Same model as j5touch (github.com/jimkoutso2008/j5touch): a plain WDM driver that registers with
-   hidclass.sys itself (no KMDF, no mshidkmdf, no SpbCx, no goyai2c), drives the I2C controller itself
-   and reports touches as an absolute mouse: the first finger moves the pointer and holds the left
-   button (tap = click, drag = drag). WinPE has mouse support but no touch input.
+   Windows sees the touchscreen as a mouse: the first finger moves the pointer and holds the left button
+   (tap = click, drag = drag). WinPE has mouse support but no touch input.
 
-   I2C: TWSI1 (0xD4010800, PXA "i2c-pxa" register layout), polled, 400 kHz fast mode; APBC TWSI1
-   clock register 0xD4015060. The addresses are fixed for the PXA986, so the device needs no ACPI
-   resources (Dsdt.asl TCH0: HID MRVL0005, no _CRS). Touch chip at 7-bit address 0x20, protocol from
-   the 4.19 kernel drivers/input/touchscreen/zinitix.c (point mode 0, 5 fingers).
+   Model: like a mouse port driver (i8042prt, sermouse). The device is in the Mouse class, mouclass.sys
+   is the class upper filter; it connects with IOCTL_INTERNAL_MOUSE_CONNECT and this driver hands it
+   MOUSE_INPUT_DATA (MOUSE_MOVE_ABSOLUTE, 0..65535) through the class service callback. Only
+   ntoskrnl/hal are imported: no hidclass.sys, KMDF, mshidkmdf, SpbCx or goyai2c. (The HID minidriver
+   version, which imports HIDCLASS.SYS, was never loaded by WinPE 8520 - most likely a dependency of
+   hidclass.sys (WppRecorder.sys) is missing there; the KMDF/mshidkmdf version never got a mouse either.)
 
-   A system thread polls the point-status register every 10 ms (no interrupt).
+   I2C: TWSI1 (0xD4010800, PXA "i2c-pxa" register layout), polled, 400 kHz; APBC TWSI1 clock register
+   0xD4015060; GPIO87/88 are routed to TWSI1 by this driver. The addresses are fixed for the PXA986, so
+   no ACPI resources are used (Dsdt.asl TCH0: HID MRVL0005). Touch chip at 7-bit address 0x20, protocol
+   from the 4.19 kernel drivers/input/touchscreen/zinitix.c (point mode 0, 5 fingers). A system thread
+   polls the point-status register every 10 ms (no interrupt).
 
    Status on screen (top right, see common\goyatrace.h), redrawn every second by a thread started in
-   DriverEntry so that WinPE's desktop cannot paint over it:
-     "5 <stage>"  00 driver loaded, 02 device added, 10 started, 11 started and hidclass reads reports,
+   DriverEntry so that the desktop cannot paint over it:
+     "5 <stage>"  00 driver loaded, 02 device added, 10 started, 11 started and mouclass connected,
                   1F start failed
      "5 0 <x>"    result of the last chip initialisation (00000000 = OK, else NTSTATUS; FFFFFFFF = none yet)
      "5 1 <x>"    before the chip answers: the old GPIO87/88 MFPR values; after: chip code (high 16 bits)
-                  and the number of mouse reports sent (low 16 bits)
+                  and the number of mouse events sent (low 16 bits)
 */
 #define GOYA_TRACE_ID 5
 #include <ntddk.h>
-#include <hidport.h>
+#include <ntddmou.h>
+#include <kbdmou.h>
 #include "..\common\goyatrace.h"
-
-/* ---- HID: absolute mouse, no report ID, 5-byte input report --------------------------------- */
-
-static const UCHAR gReportDescriptor[] = {
-    0x05, 0x01,             /* Usage Page (Generic Desktop) */
-    0x09, 0x02,             /* Usage (Mouse) */
-    0xA1, 0x01,             /* Collection (Application) */
-    0x09, 0x01,             /*   Usage (Pointer) */
-    0xA1, 0x00,             /*   Collection (Physical) */
-    0x05, 0x09,             /*     Usage Page (Button) */
-    0x19, 0x01, 0x29, 0x01, /*     Usage Minimum/Maximum (1) */
-    0x15, 0x00, 0x25, 0x01, /*     Logical 0..1 */
-    0x95, 0x01, 0x75, 0x01, 0x81, 0x02,     /* 1 button bit */
-    0x95, 0x01, 0x75, 0x07, 0x81, 0x03,     /* 7 padding bits */
-    0x05, 0x01,             /*     Usage Page (Generic Desktop) */
-    0x09, 0x30, 0x09, 0x31, /*     Usage X, Y */
-    0x15, 0x00, 0x26, 0xFF, 0x7F,           /* Logical 0..32767 */
-    0x75, 0x10, 0x95, 0x02, 0x81, 0x02,     /* X, Y: 16 bit, absolute */
-    0xC0,
-    0xC0
-};
-
-static const HID_DESCRIPTOR gHidDescriptor = {
-    sizeof(HID_DESCRIPTOR), 0x21, 0x0101, 0, 1, { 0x22, sizeof(gReportDescriptor) }
-};
-
-#pragma pack(push, 1)
-typedef struct _MOUSE_REPORT {
-    UCHAR  Buttons;         /* bit 0 = left */
-    USHORT X, Y;            /* 0..32767 */
-} MOUSE_REPORT;
-#pragma pack(pop)
 
 /* ---- hardware --------------------------------------------------------------------------------- */
 
@@ -132,14 +105,17 @@ typedef struct _DEV_EXT {
     PDEVICE_OBJECT Next;
     PUCHAR         Twsi;            /* mapped TWSI1 */
     PULONG         Clock;           /* mapped APBC TWSI1 clock register */
-    KSPIN_LOCK     Lock;
-    LIST_ENTRY     PendingReads;
+    KSPIN_LOCK     Lock;            /* protects Connect */
+    CONNECT_DATA   Connect;         /* mouclass device + service callback */
+    BOOLEAN        Connected;
     PKTHREAD       Thread;
     KEVENT         StopEvent;
     BOOLEAN        Initialized;
-    BOOLEAN        HaveReport;
+    BOOLEAN        Down;            /* last button state sent */
+    BOOLEAN        Started;
+    BOOLEAN        Removed;
     ULONG          InitTries;
-    MOUSE_REPORT   Last;
+    LONG           LastX, LastY;
 } DEV_EXT;
 
 /* status shown by the heartbeat thread */
@@ -161,10 +137,7 @@ static VOID HeartbeatThread(PVOID Context)
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
-static DEV_EXT *GetExt(PDEVICE_OBJECT Fdo)
-{
-    return (DEV_EXT *)((PHID_DEVICE_EXTENSION)Fdo->DeviceExtension)->MiniDeviceExtension;
-}
+static DEV_EXT *GetExt(PDEVICE_OBJECT Dev) { return (DEV_EXT *)Dev->DeviceExtension; }
 
 static ULONG Rd(DEV_EXT *E, ULONG Off) { return READ_REGISTER_ULONG((PULONG)(E->Twsi + Off)); }
 static VOID  Wr(DEV_EXT *E, ULONG Off, ULONG V) { WRITE_REGISTER_ULONG((PULONG)(E->Twsi + Off), V); }
@@ -358,58 +331,27 @@ static NTSTATUS ZInitChip(DEV_EXT *E)
     return STATUS_SUCCESS;
 }
 
-/* ---- HID read completion -------------------------------------------------------------------- */
+/* ---- mouse input to mouclass ------------------------------------------------------------------ */
 
-static VOID ReadCancel(PDEVICE_OBJECT Fdo, PIRP Irp)
+static VOID SendMouse(DEV_EXT *E, LONG X, LONG Y, USHORT ButtonFlags)
 {
-    DEV_EXT *E = GetExt(Fdo);
+    MOUSE_INPUT_DATA d;
+    ULONG consumed = 0;
     KIRQL irql;
 
-    IoReleaseCancelSpinLock(Irp->CancelIrql);
-    KeAcquireSpinLock(&E->Lock, &irql);
-    RemoveEntryList(&Irp->Tail.Overlay.ListEntry);
-    KeReleaseSpinLock(&E->Lock, irql);
-    Irp->IoStatus.Status = STATUS_CANCELLED;
-    Irp->IoStatus.Information = 0;
-    IoCompleteRequest(Irp, IO_NO_INCREMENT);
-}
+    RtlZeroMemory(&d, sizeof(d));
+    d.UnitId = 0;
+    d.Flags = MOUSE_MOVE_ABSOLUTE;
+    d.ButtonFlags = ButtonFlags;
+    d.LastX = X;
+    d.LastY = Y;
 
-static PIRP TakeRead(DEV_EXT *E)
-{
-    KIRQL irql;
-    PIRP irp = NULL;
-
-    KeAcquireSpinLock(&E->Lock, &irql);
-    while (!IsListEmpty(&E->PendingReads)) {
-        PLIST_ENTRY le = RemoveHeadList(&E->PendingReads);
-        irp = CONTAINING_RECORD(le, IRP, Tail.Overlay.ListEntry);
-        if (IoSetCancelRoutine(irp, NULL) != NULL) break;
-        InitializeListHead(&irp->Tail.Overlay.ListEntry);   /* being cancelled: ReadCancel completes it */
-        irp = NULL;
+    KeAcquireSpinLock(&E->Lock, &irql);             /* the class service runs at DISPATCH_LEVEL */
+    if (E->Connected && E->Connect.ClassService != NULL) {
+        ((PSERVICE_CALLBACK_ROUTINE)(ULONG_PTR)E->Connect.ClassService)(E->Connect.ClassDeviceObject, &d, &d + 1, &consumed);
+        gReports++;
     }
     KeReleaseSpinLock(&E->Lock, irql);
-    return irp;
-}
-
-static VOID CompleteRead(DEV_EXT *E, const MOUSE_REPORT *R)
-{
-    PIRP irp = TakeRead(E);
-    if (irp == NULL) return;                                /* nobody reading: the report is dropped */
-    RtlCopyMemory(irp->UserBuffer, R, sizeof(*R));
-    gReports++;
-    irp->IoStatus.Status = STATUS_SUCCESS;
-    irp->IoStatus.Information = sizeof(*R);
-    IoCompleteRequest(irp, IO_MOUSE_INCREMENT);
-}
-
-static VOID CancelAllReads(DEV_EXT *E)
-{
-    PIRP irp;
-    while ((irp = TakeRead(E)) != NULL) {
-        irp->IoStatus.Status = STATUS_DEVICE_NOT_CONNECTED;
-        irp->IoStatus.Information = 0;
-        IoCompleteRequest(irp, IO_NO_INCREMENT);
-    }
 }
 
 /* ---- polling ---------------------------------------------------------------------------------- */
@@ -418,7 +360,8 @@ static VOID PollOnce(DEV_EXT *E)
 {
     UCHAR raw[4 + 6 * NFINGERS];
     USHORT status;
-    MOUSE_REPORT r = E->Last;
+    BOOLEAN down = FALSE;
+    LONG x = E->LastX, y = E->LastY;
     int i;
 
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
@@ -429,26 +372,31 @@ static VOID PollOnce(DEV_EXT *E)
     if (status == 0) return;                                /* nothing new */
     if (status == 0xFFFF || (status & BIT_MUST_ZERO)) { ZCmd(E, Z_CLEAR_INT); return; }
 
-    r.Buttons = 0;
     if (status & BIT_PT_EXIST) {
         for (i = 0; i < NFINGERS; i++) {
             const UCHAR *p = raw + 4 + i * 6;               /* x(2) y(2) width sub_status */
-            ULONG rx = (ULONG)(p[0] | (p[1] << 8)), ry = (ULONG)(p[2] | (p[3] << 8));
+            LONG rx = (LONG)(p[0] | (p[1] << 8)), ry = (LONG)(p[2] | (p[3] << 8));
             if (!(p[5] & SUB_BIT_EXIST) || rx > RAW_MAX_X || ry > RAW_MAX_Y) continue;
-            /* DT inverted-x, swapped-x-y: screen x = raw y, screen y = max - raw x */
-            r.X = (USHORT)(ry * 32767 / RAW_MAX_Y);
-            r.Y = (USHORT)((RAW_MAX_X - rx) * 32767 / RAW_MAX_X);
-            r.Buttons = 1;
+            /* DT inverted-x, swapped-x-y: screen x = raw y, screen y = max - raw x; 0..65535 */
+            x = ry * 65535 / RAW_MAX_Y;
+            y = (RAW_MAX_X - rx) * 65535 / RAW_MAX_X;
+            down = TRUE;
             break;
         }
     }
     ZCmd(E, Z_CLEAR_INT);
 
-    if (!E->HaveReport || r.Buttons != E->Last.Buttons || r.X != E->Last.X || r.Y != E->Last.Y) {
-        E->Last = r;
-        E->HaveReport = TRUE;
-        CompleteRead(E, &r);
+    if (down && !E->Down) {
+        SendMouse(E, x, y, 0);                              /* move first, then press there */
+        SendMouse(E, x, y, MOUSE_LEFT_BUTTON_DOWN);
+    } else if (!down && E->Down) {
+        SendMouse(E, x, y, MOUSE_LEFT_BUTTON_UP);
+    } else if (down && (x != E->LastX || y != E->LastY)) {
+        SendMouse(E, x, y, 0);
     }
+    E->Down = down;
+    E->LastX = x;
+    E->LastY = y;
 }
 
 static VOID PollStep(DEV_EXT *E, ULONG Tick)
@@ -475,7 +423,7 @@ static VOID PollThread(PVOID Context)
 
     period.QuadPart = -10000LL * POLL_MS;
     while (KeWaitForSingleObject(&E->StopEvent, Executive, KernelMode, FALSE, &period) == STATUS_TIMEOUT) {
-        __try { PollStep(E, tick); }        /* no GoyaTraceStep here: it would redraw 100 times a second */
+        __try { PollStep(E, tick); }
         __except (GoyaTraceFilter(GetExceptionInformation(), 0x01)) { E->Initialized = FALSE; }
         tick++;
     }
@@ -512,10 +460,10 @@ static VOID StopDevice(DEV_EXT *E)
         ObDereferenceObject(E->Thread);
         E->Thread = NULL;
     }
-    CancelAllReads(E);
     if (E->Twsi != NULL) { MmUnmapIoSpace(E->Twsi, TWSI1_LEN); E->Twsi = NULL; }
     if (E->Clock != NULL) { MmUnmapIoSpace(E->Clock, sizeof(ULONG)); E->Clock = NULL; }
     E->Initialized = FALSE;
+    E->Started = FALSE;
 }
 
 /* Route GPIO87/88 to TWSI1 (normally goyapinmux does it; it is left out of WinPE cards). Only these two
@@ -555,6 +503,7 @@ static NTSTATUS StartDevice(DEV_EXT *E)
     if (!NT_SUCCESS(st)) return st;
     ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)&E->Thread, NULL);
     ZwClose(h);
+    E->Started = TRUE;
     return STATUS_SUCCESS;
 }
 
@@ -562,6 +511,7 @@ static NTSTATUS DispatchPnp(PDEVICE_OBJECT Fdo, PIRP Irp)
 {
     DEV_EXT *E = GetExt(Fdo);
     PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(Irp);
+    PDEVICE_OBJECT next = E->Next;
     NTSTATUS st;
 
     switch (sp->MinorFunction) {
@@ -571,15 +521,31 @@ static NTSTATUS DispatchPnp(PDEVICE_OBJECT Fdo, PIRP Irp)
             st = StartDevice(E);
             if (!NT_SUCCESS(st)) StopDevice(E);
         }
-        gStage = NT_SUCCESS(st) ? 0x10 : 0x1F;
+        gStage = NT_SUCCESS(st) ? (E->Connected ? 0x11 : 0x10) : 0x1F;
         Irp->IoStatus.Status = st;
         IoCompleteRequest(Irp, IO_NO_INCREMENT);
         return st;
 
     case IRP_MN_STOP_DEVICE:
     case IRP_MN_SURPRISE_REMOVAL:
+        StopDevice(E);
+        Irp->IoStatus.Status = STATUS_SUCCESS;
+        break;
+
     case IRP_MN_REMOVE_DEVICE:
         StopDevice(E);
+        E->Removed = TRUE;
+        Irp->IoStatus.Status = STATUS_SUCCESS;
+        IoSkipCurrentIrpStackLocation(Irp);
+        st = IoCallDriver(next, Irp);
+        IoDetachDevice(next);
+        IoDeleteDevice(Fdo);
+        return st;
+
+    case IRP_MN_QUERY_STOP_DEVICE:
+    case IRP_MN_QUERY_REMOVE_DEVICE:
+    case IRP_MN_CANCEL_STOP_DEVICE:
+    case IRP_MN_CANCEL_REMOVE_DEVICE:
         Irp->IoStatus.Status = STATUS_SUCCESS;
         break;
 
@@ -587,7 +553,7 @@ static NTSTATUS DispatchPnp(PDEVICE_OBJECT Fdo, PIRP Irp)
         break;
     }
     IoSkipCurrentIrpStackLocation(Irp);
-    return IoCallDriver(E->Next, Irp);
+    return IoCallDriver(next, Irp);
 }
 
 static NTSTATUS DispatchPower(PDEVICE_OBJECT Fdo, PIRP Irp)
@@ -597,82 +563,97 @@ static NTSTATUS DispatchPower(PDEVICE_OBJECT Fdo, PIRP Irp)
     return PoCallDriver(GetExt(Fdo)->Next, Irp);
 }
 
-/* ---- HID IOCTLs from hidclass (METHOD_NEITHER: output in Irp->UserBuffer) ------------------------ */
-
-static NTSTATUS CopyOut(PIRP Irp, const VOID *Data, ULONG Length)
+static NTSTATUS DispatchPassDown(PDEVICE_OBJECT Fdo, PIRP Irp)
 {
-    PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(Irp);
-    if (sp->Parameters.DeviceIoControl.OutputBufferLength < Length || Irp->UserBuffer == NULL) return STATUS_BUFFER_TOO_SMALL;
-    RtlCopyMemory(Irp->UserBuffer, Data, Length);
-    Irp->IoStatus.Information = Length;
+    IoSkipCurrentIrpStackLocation(Irp);
+    return IoCallDriver(GetExt(Fdo)->Next, Irp);
+}
+
+static NTSTATUS DispatchCreateClose(PDEVICE_OBJECT Fdo, PIRP Irp)
+{
+    UNREFERENCED_PARAMETER(Fdo);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
     return STATUS_SUCCESS;
 }
+
+/* ---- requests from mouclass (the class driver above us) ------------------------------------------ */
 
 static NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT Fdo, PIRP Irp)
 {
     DEV_EXT *E = GetExt(Fdo);
     PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(Irp);
-    HID_DEVICE_ATTRIBUTES attr;
-    NTSTATUS st;
+    NTSTATUS st = STATUS_SUCCESS;
     KIRQL irql;
 
     Irp->IoStatus.Information = 0;
     switch (sp->Parameters.DeviceIoControl.IoControlCode) {
-    case IOCTL_HID_GET_DEVICE_DESCRIPTOR:
-        st = CopyOut(Irp, &gHidDescriptor, sizeof(gHidDescriptor));
-        break;
-    case IOCTL_HID_GET_REPORT_DESCRIPTOR:
-        st = CopyOut(Irp, gReportDescriptor, sizeof(gReportDescriptor));
-        break;
-    case IOCTL_HID_GET_DEVICE_ATTRIBUTES:
-        RtlZeroMemory(&attr, sizeof(attr));
-        attr.Size = sizeof(attr);
-        attr.VendorID = 0x1FC9;             /* arbitrary: "Goya" */
-        attr.ProductID = 0x0532;
-        attr.VersionNumber = 0x0003;
-        st = CopyOut(Irp, &attr, sizeof(attr));
-        break;
-    case IOCTL_HID_READ_REPORT:
-        if (sp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MOUSE_REPORT) || Irp->UserBuffer == NULL) {
-            st = STATUS_BUFFER_TOO_SMALL;
+    case IOCTL_INTERNAL_MOUSE_CONNECT: {
+        PCONNECT_DATA cd = (PCONNECT_DATA)sp->Parameters.DeviceIoControl.Type3InputBuffer;
+        if (cd == NULL || sp->Parameters.DeviceIoControl.InputBufferLength < sizeof(CONNECT_DATA)) {
+            st = STATUS_INVALID_PARAMETER;
             break;
         }
         KeAcquireSpinLock(&E->Lock, &irql);
-        IoSetCancelRoutine(Irp, ReadCancel);
-        if (Irp->Cancel && IoSetCancelRoutine(Irp, NULL) != NULL) {
-            KeReleaseSpinLock(&E->Lock, irql);
-            st = STATUS_CANCELLED;
+        if (E->Connected) {
+            st = STATUS_SHARING_VIOLATION;
+        } else {
+            E->Connect = *cd;
+            E->Connected = TRUE;
+        }
+        KeReleaseSpinLock(&E->Lock, irql);
+        if (NT_SUCCESS(st) && gStage == 0x10) gStage = 0x11;
+        break;
+    }
+    case IOCTL_INTERNAL_MOUSE_DISCONNECT:
+        KeAcquireSpinLock(&E->Lock, &irql);
+        E->Connected = FALSE;
+        RtlZeroMemory(&E->Connect, sizeof(E->Connect));
+        KeReleaseSpinLock(&E->Lock, irql);
+        break;
+    case IOCTL_INTERNAL_MOUSE_ENABLE:
+    case IOCTL_INTERNAL_MOUSE_DISABLE:
+        break;
+    case IOCTL_MOUSE_QUERY_ATTRIBUTES: {
+        PMOUSE_ATTRIBUTES a = (PMOUSE_ATTRIBUTES)Irp->AssociatedIrp.SystemBuffer;
+        if (a == NULL || sp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MOUSE_ATTRIBUTES)) {
+            st = STATUS_BUFFER_TOO_SMALL;
             break;
         }
-        IoMarkIrpPending(Irp);
-        InsertTailList(&E->PendingReads, &Irp->Tail.Overlay.ListEntry);
-        KeReleaseSpinLock(&E->Lock, irql);
-        if (gStage == 0x10) gStage = 0x11;
-        return STATUS_PENDING;
-    case IOCTL_HID_ACTIVATE_DEVICE:
-    case IOCTL_HID_DEACTIVATE_DEVICE:
-        st = STATUS_SUCCESS;
+        RtlZeroMemory(a, sizeof(*a));
+        a->MouseIdentifier = MOUSE_HID_HARDWARE;
+        a->NumberOfButtons = 1;
+        a->SampleRate = 1000 / POLL_MS;
+        a->InputDataQueueLength = 64;
+        Irp->IoStatus.Information = sizeof(MOUSE_ATTRIBUTES);
         break;
+    }
     default:
-        st = STATUS_NOT_SUPPORTED;
-        break;
+        IoSkipCurrentIrpStackLocation(Irp);              /* not ours: let the bus driver answer */
+        return IoCallDriver(E->Next, Irp);
     }
     Irp->IoStatus.Status = st;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
     return st;
 }
 
-static NTSTATUS AddDevice(PDRIVER_OBJECT Driver, PDEVICE_OBJECT Fdo)
+static NTSTATUS AddDevice(PDRIVER_OBJECT Driver, PDEVICE_OBJECT Pdo)
 {
-    DEV_EXT *E = GetExt(Fdo);
-    UNREFERENCED_PARAMETER(Driver);
+    PDEVICE_OBJECT fdo;
+    DEV_EXT *E;
+    NTSTATUS st;
 
+    st = IoCreateDevice(Driver, sizeof(DEV_EXT), NULL, FILE_DEVICE_MOUSE, FILE_DEVICE_SECURE_OPEN, FALSE, &fdo);
+    if (!NT_SUCCESS(st)) { gStage = 0x0E; gInit = (ULONG)st; return st; }
+    E = GetExt(fdo);
     RtlZeroMemory(E, sizeof(*E));
-    E->Self = Fdo;
-    E->Next = ((PHID_DEVICE_EXTENSION)Fdo->DeviceExtension)->NextDeviceObject;
+    E->Self = fdo;
     KeInitializeSpinLock(&E->Lock);
-    InitializeListHead(&E->PendingReads);
-    Fdo->Flags &= ~DO_DEVICE_INITIALIZING;
+    E->Next = IoAttachDeviceToDeviceStack(fdo, Pdo);
+    if (E->Next == NULL) { IoDeleteDevice(fdo); gStage = 0x0F; return STATUS_NO_SUCH_DEVICE; }
+    fdo->Flags |= DO_BUFFERED_IO | DO_POWER_PAGABLE;
+    fdo->Flags &= ~DO_DEVICE_INITIALIZING;
     gStage = 0x02;
     return STATUS_SUCCESS;
 }
@@ -690,37 +671,25 @@ static VOID DriverUnload(PDRIVER_OBJECT Driver)
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
 {
-    HID_MINIDRIVER_REGISTRATION reg;
+    HANDLE h;
+    ULONG i;
+    UNREFERENCED_PARAMETER(RegistryPath);
 
+    for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++) Driver->MajorFunction[i] = DispatchPassDown;
+    Driver->MajorFunction[IRP_MJ_CREATE] = DispatchCreateClose;
+    Driver->MajorFunction[IRP_MJ_CLOSE] = DispatchCreateClose;
+    Driver->MajorFunction[IRP_MJ_CLEANUP] = DispatchCreateClose;
     Driver->MajorFunction[IRP_MJ_PNP] = DispatchPnp;
     Driver->MajorFunction[IRP_MJ_POWER] = DispatchPower;
     Driver->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = DispatchInternalIoctl;
     Driver->DriverExtension->AddDevice = AddDevice;
     Driver->DriverUnload = DriverUnload;
 
-    RtlZeroMemory(&reg, sizeof(reg));
-    reg.Revision = HID_REVISION;
-    reg.DriverObject = Driver;
-    reg.RegistryPath = RegistryPath;
-    reg.DeviceExtensionSize = sizeof(DEV_EXT);
-    reg.DevicesArePolled = FALSE;
     gStage = 0x00;
     KeInitializeEvent(&gHbStop, NotificationEvent, FALSE);
-    {
-        HANDLE h;
-        if (NT_SUCCESS(PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL, HeartbeatThread, NULL))) {
-            ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)&gHbThread, NULL);
-            ZwClose(h);
-        }
+    if (NT_SUCCESS(PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL, HeartbeatThread, NULL))) {
+        ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)&gHbThread, NULL);
+        ZwClose(h);
     }
-    {
-        NTSTATUS st = HidRegisterMinidriver(&reg);
-        if (!NT_SUCCESS(st)) {
-            gStage = 0xE0; gInit = (ULONG)st;
-            DriverUnload(Driver);           /* the image is unloaded on failure: stop the thread first */
-            GoyaTraceStep(gStage);
-            GoyaTraceValue(0, gInit);
-        }
-        return st;
-    }
+    return STATUS_SUCCESS;
 }

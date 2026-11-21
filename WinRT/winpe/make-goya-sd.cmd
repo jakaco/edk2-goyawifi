@@ -110,6 +110,14 @@ rem HAL extension entry LAST, so that nothing added above can overwrite it
 reg load HKLM\%HIVE% "%MNT%\Windows\System32\config\SYSTEM" >nul || goto discard
 reg add "HKLM\%HIVE%\ControlSet001\Control\OSExtensionDatabase\VEN_MRVL&DEV_0001" /v HALExtension /t REG_SZ /d "%HALEXT_REGPATH%" /f >nul
 set RC=%errorlevel%
+rem goyatouch is a mouse port driver: mouclass must be the Mouse class upper filter (it normally is)
+set MCLS=HKLM\%HIVE%\ControlSet001\Control\Class\{4d36e96f-e325-11ce-bfc1-08002be10318}
+reg query "%MCLS%" /v UpperFilters 2>nul | find /i "mouclass" >nul || (
+  echo   Mouse class had no mouclass upper filter: adding it
+  reg add "%MCLS%" /v UpperFilters /t REG_MULTI_SZ /d mouclass /f >nul
+  reg add "%MCLS%" /v Class /t REG_SZ /d Mouse /f >nul
+)
+reg query "HKLM\%HIVE%\ControlSet001\Services\mouclass" >nul 2>&1 || echo   WARNING: this WinPE image has no mouclass service - no mouse/touch pointer possible
 rem goyabug: boot driver that writes the stop code, parameters and the faulting driver on the stop
 rem screen (8520 shows no parameters). Set GOYA_BUG=0 to leave it out.
 set BUGSYS=
