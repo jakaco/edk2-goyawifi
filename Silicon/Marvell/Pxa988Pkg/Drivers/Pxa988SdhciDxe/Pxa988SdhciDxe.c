@@ -355,12 +355,29 @@ Pxa988SdPower (
   }
 
   DEBUG ((DEBUG_INFO, "Pxa988Sdhci: LDO_ENA1_1 = 0x%02x\n", Ena));
-  // LDO1 (v_tsp_3v3, touchscreen supply) is regulator-boot-on in the vendor DT: S-Boot has already set
-  // it up. Do NOT enable it here (the voltage would be unknown); just report the state for the tester.
-  DEBUG ((DEBUG_INFO, "Pxa988Sdhci: touch supply LDO1 is %a\n", (Ena & BIT0) != 0 ? "ON" : "OFF (touch will not work)"));
   if ((Ena & (PM800_LDO4_EN | PM800_LDO5_EN)) != (PM800_LDO4_EN | PM800_LDO5_EN)) {
-    Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_1, Ena | PM800_LDO4_EN | PM800_LDO5_EN);
+    Ena |= PM800_LDO4_EN | PM800_LDO5_EN;
+    Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_1, Ena);
     MicroSecondDelay (10000);
+  }
+
+  //
+  // LDO1 = v_tsp_3v3, the Zinitix touchscreen supply: 2.8 V, regulator-boot-on + always-on in the vendor
+  // DT, but nothing guarantees that S-Boot switched it on before starting this firmware (the touch chip
+  // did not answer on I2C under Windows). 88PM822 LDO1: VOUT register 0x08 bits 3:0 index the table
+  // 1.7/1.8/1.9/2.5/2.8/2.9/3.1/3.3 V (vendor kernel 88pm800-regulator.c), enable = LDO_ENA1_1 bit 0.
+  //
+  if ((Ena & PM800_LDO1_EN) == 0) {
+    UINT8  Vout;
+
+    if (!EFI_ERROR (Pm822Read (PM822_POWER_I2C_ADDR, PM800_LDO1_VOUT, &Vout))) {
+      Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO1_VOUT, (UINT8)((Vout & 0xF0) | PM822_LDO1_2V8));
+      Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_1, (UINT8)(Ena | PM800_LDO1_EN));
+      MicroSecondDelay (30000);       // 15 ms ramp (DT) + touch controller power-on
+      DEBUG ((DEBUG_INFO, "Pxa988Sdhci: touch supply LDO1 was off: set to 2.8 V and enabled\n"));
+    }
+  } else {
+    DEBUG ((DEBUG_INFO, "Pxa988Sdhci: touch supply LDO1 already on\n"));
   }
 }
 

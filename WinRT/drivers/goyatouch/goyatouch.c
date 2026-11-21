@@ -23,8 +23,11 @@
      "5 <stage>"  00 driver loaded, 02 device added, 10 started, 11 started and mouclass connected,
                   1F start failed
      "5 0 <x>"    result of the last chip initialisation (00000000 = OK, else NTSTATUS; FFFFFFFF = none yet)
-     "5 1 <x>"    before the chip answers: the old GPIO87/88 MFPR values; after: chip code (high 16 bits)
-                  and the number of mouse events sent (low 16 bits)
+     "5 1 <x>"    after a failed initialisation: 3 = both I2C lines high (idle) in the top digit (bit 28 SDA,
+                  bit 29 SCL), APBC TWSI1 clock register in digits 3-4, I2C status register (ISR) in the low
+                  4 digits; after the chip answered: chip code (high 16 bits) + mouse events sent (low 16)
+                  "5 0" C000000E = no ACK from the chip (absent / unpowered), C0000185 = bus error or
+                  arbitration lost (lines stuck), C00000B5 = controller timeout
 */
 #define GOYA_TRACE_ID 5
 #include <ntddk.h>
@@ -41,6 +44,7 @@
 #define MFPR_TWSI1_MASK 0x038F          /* from the vendor DT twsi1_pins (goyapinmux table) */
 #define MFPR_TWSI1_VAL  0x028D          /* AF5 = TWSI1, drive/pull as in the DT */
 
+#define I2C_IBMR   0x00             /* bus monitor: bit 0 SDA, bit 1 SCL (1 = high) */
 #define I2C_IDBR   0x08
 #define I2C_ICR    0x10
 #define I2C_ISR    0x18
@@ -170,15 +174,24 @@ static VOID I2cReset(DEV_EXT *E)
     KeStallExecutionProcessor(100);
 }
 
+static volatile ULONG gLastIsr, gLastIbmr;
+
+/* Errors: NAK (BED + ACKNAK: nobody answered) -> STATUS_NO_SUCH_DEVICE, arbitration lost / other bus
+   error -> STATUS_IO_DEVICE_ERROR, no completion -> STATUS_IO_TIMEOUT. The ISR is kept for the screen. */
 static NTSTATUS I2cWait(DEV_EXT *E, ULONG Bit)
 {
     ULONG n;
     for (n = 0; n < I2C_POLL_LOOPS; n++) {
         ULONG isr = Rd(E, I2C_ISR);
-        if (isr & (ISR_BED | ISR_ALD)) { Wr(E, I2C_ISR, ISR_BED | ISR_ALD); return STATUS_IO_DEVICE_ERROR; }
+        if (isr & (ISR_BED | ISR_ALD)) {
+            gLastIsr = isr;
+            Wr(E, I2C_ISR, ISR_BED | ISR_ALD);
+            return ((isr & ISR_BED) && (isr & ISR_ACKNAK) && !(isr & ISR_ALD)) ? STATUS_NO_SUCH_DEVICE : STATUS_IO_DEVICE_ERROR;
+        }
         if (isr & Bit) { Wr(E, I2C_ISR, Bit); return STATUS_SUCCESS; }
         KeStallExecutionProcessor(10);
     }
+    gLastIsr = Rd(E, I2C_ISR);
     return STATUS_IO_TIMEOUT;
 }
 
@@ -212,7 +225,9 @@ static VOID I2cRecover(DEV_EXT *E)
 /* One complete write (START addr+W data... STOP) */
 static NTSTATUS I2cWrite(DEV_EXT *E, const UCHAR *Buf, ULONG Len)
 {
-    NTSTATUS st = I2cTx(E, (UCHAR)(Z_ADDR << 1), ICR_START);
+    NTSTATUS st;
+    gLastIbmr = Rd(E, I2C_IBMR);                 /* line levels before START: 3 = both high (idle) */
+    st = I2cTx(E, (UCHAR)(Z_ADDR << 1), ICR_START);
     ULONG i;
     for (i = 0; NT_SUCCESS(st) && i < Len; i++) {
         st = I2cTx(E, Buf[i], (i == Len - 1) ? ICR_STOP : 0);
@@ -410,6 +425,11 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
             E->InitTries++;
             st = ZInitChip(E);
             gInit = (ULONG)st;
+            if (!NT_SUCCESS(st)) {
+                /* slot 1 until the chip answers: bus lines (SDA bit 28, SCL bit 29), APBC TWSI1 clock
+                   register (bits 23:16), I2C status register at the failure (bits 15:0) */
+                gInfo = ((gLastIbmr & 3) << 28) | ((E->Clock ? (READ_REGISTER_ULONG(E->Clock) & 0xFF) : 0xEE) << 16) | (gLastIsr & 0xFFFF);
+            }
             E->Initialized = (BOOLEAN)NT_SUCCESS(st);
         }
         return;

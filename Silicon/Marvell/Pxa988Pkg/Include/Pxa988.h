@@ -139,6 +139,9 @@
 #define PM800_STATUS_1              0x01
 #define   PM800_ONKEY_STS           BIT0
 #define PM800_LDO_ENA1_1            0x51
+#define   PM800_LDO1_EN             BIT0        // v_tsp_3v3 (touchscreen vdd/vcca)
+#define PM800_LDO1_VOUT             0x08        // low nibble: 88PM822 LDO1/2 table, 4 = 2.8 V
+#define   PM822_LDO1_2V8            4
 #define   PM800_LDO4_EN             BIT3        // v_sd_3v3  (microSD vmmc)
 #define   PM800_LDO5_EN             BIT4        // v_mmc_3v3 (microSD vqmmc)
 
