@@ -206,9 +206,13 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
 
 **Doesn't work / left off the card**
 
-* **goyasdhc** (Storport microSD miniport): crashes, fix deferred. Without it
-  Windows can't see the SD card after boot (WinPE runs from its RAM disk, so
-  `autorun.cmd` / diag files on the card never run).
+* **goyasdhc** (Storport microSD miniport): back on the WinPE card by default
+  for testing (`GOYA_SDHC=0` leaves it out). It was left out while the random
+  early stops were blamed on it; those also happened without it. It now shows
+  its stage, card, request counters and last error on screen (`1 ...` lines),
+  catches exceptions in its own code, and stops retrying a card that won't
+  initialise. Without it Windows can't see the SD card after boot (WinPE runs
+  from its RAM disk).
 * **goyagpio** (GpioClx): the 8520 GPIO class extension stops with
   SYSTEM_THREAD_EXCEPTION_NOT_HANDLED. Left out.
 * **goyapinmux**: left off until its MFPR mask is trimmed.
