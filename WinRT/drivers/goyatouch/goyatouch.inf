@@ -4,7 +4,7 @@ Signature="$WINDOWS NT$"
 Class=Mouse
 ClassGuid={4d36e96f-e325-11ce-bfc1-08002be10318}
 Provider=%PROVIDER%
-DriverVer = 11/21/2026,1.2.0.0
+DriverVer = 11/21/2026,1.3.0.0
 CatalogFile=goyatouch.cat
 
 [SourceDisksNames]
@@ -20,7 +20,10 @@ DefaultDestDir = 12
 %PROVIDER%=Goya,NTARM
 
 [Goya.NTARM]
-%Touch.DeviceDesc% = Touch_Inst,ACPI\MRVL0005
+; Bound to the I2C1 controller device (MRVL0004, TWSI1 registers), not to TCH0 (MRVL0005): TCH0 declares
+; an I2cSerialBus connection on I2C1 and Windows never started it while I2C1 had no driver, so goyatouch
+; was never loaded. goyatouch drives TWSI1 itself, so it replaces goyai2c (do not install both).
+%Touch.DeviceDesc% = Touch_Inst,ACPI\MRVL0004
 
 [Touch_Inst.NT]
 CopyFiles = Touch_Copy

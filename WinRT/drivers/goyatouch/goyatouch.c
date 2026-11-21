@@ -12,7 +12,9 @@
 
    I2C: TWSI1 (0xD4010800, PXA "i2c-pxa" register layout), polled, 400 kHz; APBC TWSI1 clock register
    0xD4015060; GPIO87/88 are routed to TWSI1 by this driver. The addresses are fixed for the PXA986, so
-   no ACPI resources are used (Dsdt.asl TCH0: HID MRVL0005). Touch chip at 7-bit address 0x20, protocol
+   no ACPI resources are used. The INF binds to the I2C1 controller device (ACPI\MRVL0004), not to the
+   touch device TCH0 (MRVL0005): TCH0 declares an I2cSerialBus connection on I2C1, and Windows never
+   started it while I2C1 had no driver - goyatouch was never loaded. goyatouch replaces goyai2c. Touch chip at 7-bit address 0x20, protocol
    from the 4.19 kernel drivers/input/touchscreen/zinitix.c (point mode 0, 5 fingers). A system thread
    polls the point-status register every 10 ms (no interrupt).
 

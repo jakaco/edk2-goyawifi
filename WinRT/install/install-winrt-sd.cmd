@@ -127,7 +127,8 @@ for %%I in ("%DRV%\goya*.inf") do (
     echo   adding %%~nxI
     dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
   )
-  if /i not "%%~nI"=="goyagpio" (
+  if /i "%%~nI"=="goyai2c" echo   skipping %%~nxI ^(goyatouch drives the I2C1 controller itself^)
+  if /i not "%%~nI"=="goyagpio" if /i not "%%~nI"=="goyai2c" (
     echo   adding %%~nxI
     dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
   )

@@ -94,7 +94,7 @@ if not "%RC%"=="0" goto discard
 rem Drivers put on a WinPE card. Default: goyatouch (HID mouse, drives its I2C bus itself) and goyakeys.
 rem Left out by default, each can be added back by setting the variable to 1 before running:
 rem   GOYA_PINMUX=1  goyapinmux - with it, Windows stopped intermittently (KMODE_EXCEPTION_NOT_HANDLED)
-rem   GOYA_I2C=1     goyai2c    - not needed by goyatouch; would drive the same I2C unit (conflict)
+rem   GOYA_I2C=1     goyai2c    - conflicts: goyatouch binds to the same I2C1 device and drives it
 rem   GOYA_SDHC=1    goyasdhc   - WinPE runs from RAM; under investigation
 rem   GOYA_GPIO=1    goyagpio   - the 8520 GPIO class extension stops Windows when it starts
 rem HalExtMmpTimer.inf is never added: the HAL extension entry is set directly below.
