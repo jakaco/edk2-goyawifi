@@ -23,6 +23,8 @@
      "5 <stage>"  00 driver loaded, 02 device added, 10 started, 11 started and mouclass connected,
                   1F start failed
      "5 0 <x>"    result of the last chip initialisation (00000000 = OK, else NTSTATUS; FFFFFFFF = none yet)
+     Once the chip runs: "5 0" = last non-zero point status (4 digits), read failures (2), sub_status of
+     finger slot 0 (2); "5 1" = non-zero statuses seen (4), out-of-range fingers (1), events sent (3).
      "5 1 <x>"    after a failed initialisation: 3 = both I2C lines high (idle) in the top digit (bit 28 SDA,
                   bit 29 SCL), APBC TWSI1 clock register in digits 3-4, I2C status register (ISR) in the low
                   4 digits; after the chip answered: chip code (high 16 bits) + mouse events sent (low 16)
@@ -126,6 +128,7 @@ typedef struct _DEV_EXT {
 
 /* status shown by the heartbeat thread */
 static volatile ULONG gStage, gInit = 0xFFFFFFFF, gInfo, gChip, gReports;
+static volatile ULONG gLastStatus, gLastSub, gReadFails, gNonZero, gRejected;
 static BOOLEAN gChipOk;
 static KEVENT gHbStop;
 static PKTHREAD gHbThread;
@@ -137,8 +140,16 @@ static VOID HeartbeatThread(PVOID Context)
     t.QuadPart = -10000000LL;               /* 1 s */
     do {
         GoyaTraceStep(gStage);
-        GoyaTraceValue(0, gInit);
-        GoyaTraceValue(1, gChipOk ? ((gChip << 16) | (gReports & 0xFFFF)) : gInfo);
+        if (!gChipOk) {
+            GoyaTraceValue(0, gInit);
+            GoyaTraceValue(1, gInfo);
+        } else {
+            /* chip running: slot 0 = last non-zero point status (high 16) | read failures (bits 15:8) |
+               sub_status of the first finger slot (bits 7:0); slot 1 = non-zero statuses seen (high 16) |
+               fingers rejected as out of range (bits 15:12) | mouse events sent (bits 11:0) */
+            GoyaTraceValue(0, (gInit != 0) ? gInit : ((gLastStatus << 16) | ((gReadFails & 0xFF) << 8) | (gLastSub & 0xFF)));
+            GoyaTraceValue(1, ((gNonZero & 0xFFFF) << 16) | ((gRejected & 0xF) << 12) | (gReports & 0xFFF));
+        }
     } while (KeWaitForSingleObject(&gHbStop, Executive, KernelMode, FALSE, &t) == STATUS_TIMEOUT);
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
@@ -382,18 +393,23 @@ static VOID PollOnce(DEV_EXT *E)
     int i;
 
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
+        gReadFails++;
         E->Initialized = FALSE;                             /* chip lost: re-initialise */
         return;
     }
     status = (USHORT)(raw[0] | (raw[1] << 8));
     if (status == 0) return;                                /* nothing new */
+    gNonZero++;
+    gLastStatus = status;
+    gLastSub = raw[4 + 5];
     if (status == 0xFFFF || (status & BIT_MUST_ZERO)) { ZCmd(E, Z_CLEAR_INT); return; }
 
     if (status & BIT_PT_EXIST) {
         for (i = 0; i < NFINGERS; i++) {
             const UCHAR *p = raw + 4 + i * 6;               /* x(2) y(2) width sub_status */
             LONG rx = (LONG)(p[0] | (p[1] << 8)), ry = (LONG)(p[2] | (p[3] << 8));
-            if (!(p[5] & SUB_BIT_EXIST) || rx > RAW_MAX_X || ry > RAW_MAX_Y) continue;
+            if (!(p[5] & SUB_BIT_EXIST)) continue;
+            if (rx > RAW_MAX_X || ry > RAW_MAX_Y) { gRejected++; continue; }
             /* DT inverted-x, swapped-x-y: screen x = raw y, screen y = max - raw x; 0..65535 */
             x = ry * 65535 / RAW_MAX_Y;
             y = (RAW_MAX_X - rx) * 65535 / RAW_MAX_X;
