@@ -4,10 +4,10 @@
  * Windows 8.0 has no sdport.sys (the SD miniport model is Windows 10 only) and its inbox sdbus.sys
  * cannot cope with this controller's quirks, so this is a Storport miniport that exposes the card as
  * one fixed SCSI disk (LUN 0) and runs the SD protocol itself (sdcore.c):
- *   - polled PIO only, no DMA (works the same in normal, crash-dump and hibernate mode). The DSDT lists
- *     the SDH interrupt (GIC 71, shared by SDH1/SDH2/SDH3) only because build 8520's Storport fails the
- *     start without one; every SDH signal enable is kept at 0, and the interrupt routine silences any
- *     controller that still signals, so the shared level interrupt can never storm,
+ *   - polled PIO only, no DMA (works the same in normal, crash-dump and hibernate mode). The adapter
+ *     reports VirtualDevice so Storport neither connects an interrupt nor touches DMA (see FindAdapter).
+ *     The DSDT still lists the SDH interrupt (GIC 71, shared by SDH1/SDH2/SDH3); every SDH signal
+ *     enable is kept at 0, and the interrupt routine silences any controller that still signals,
  *   - 52 MHz base clock (capability register is not trusted), 3.3 V only,
  *     high-speed 26 MHz with automatic fallback to 13 / 6.5 MHz and 1-bit on errors,
  *   - card-detect override in Host Control 1 (the slot's detect line is GPIO 11, not the CD pin),
@@ -350,6 +350,13 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
     Cfg->NeedPhysicalAddresses = TRUE;
     Cfg->TaggedQueuing = TRUE;
     Cfg->MultipleRequestPerLu = TRUE;
+    /* No DMA: with VirtualDevice FALSE, build 8520's Storport connects the interrupt, sets up DMA and
+       calls KeFlushIoBuffers(Mdl, Read, DmaOperation=TRUE) on every data buffer (storport+0x5CB8),
+       and the ARM kernel stops with DRIVER_VERIFIER_DMA_VIOLATION 0xE6/0x1F when a read buffer is
+       not cache-line aligned (classpnp's small buffers are not). VirtualDevice TRUE (adapter+0x16C
+       in Storport) skips the interrupt, the DMA adapter and the flushes; data is copied by the CPU
+       through StorPortGetSystemAddress. */
+    Cfg->VirtualDevice = TRUE;
     Cfg->CachesData = FALSE;
     Cfg->MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
     Cfg->InitiatorBusId[0] = 7;
