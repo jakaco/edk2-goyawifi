@@ -179,6 +179,10 @@ table.
   from Storport's timer when the card stalls for more than 0.5 ms (instead of
   spinning at DISPATCH_LEVEL), and data goes through the data port directly.
   Later: DMA plus the real interrupt.
+* **GPU (goyagpu, Vivante GC1000)**: steps 1–2 done — shared KMD/UMD ABI and the hardware
+  layer (power, reset, identification, MMUv1, front-end ring, submission), checked against the
+  Linux etnaviv sequences by `tools/gpusim/ringtest.c`. Next: the WDDM 1.2 KMD; see
+  `WinRT/drivers/goyagpu/README.md` for verified facts and open questions.
 * **Charger driver**: under Windows the tablet does not charge (the SMB328
   watchdog stops charging after the firmware hands over).
 * Power key and screen brightness; the second CPU core (firmware support for
