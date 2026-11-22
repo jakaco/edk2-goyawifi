@@ -245,6 +245,23 @@ static BOOLEAN GoyaInitCard(PGOYA_EXT X)
 
 /* ---- Storport entry points ---- */
 
+/* StorPortGetDeviceBase only maps an address whose resource entry has the same interface type and
+   bus number as passed in (build 8520: the lookup at storport+0x1C064). The ACPI device's resources
+   do not carry Cfg->AdapterInterfaceType (ACPIBus) there, so try the other likely types too. */
+static PVOID DeviceBase(PGOYA_EXT X, PPORT_CONFIGURATION_INFORMATION Cfg, PACCESS_RANGE R)
+{
+    static const INTERFACE_TYPE types[] = { Internal, ACPIBus, PNPBus, Isa, PCIBus };
+    PVOID p;
+    ULONG t, b;
+    p = StorPortGetDeviceBase(X, Cfg->AdapterInterfaceType, Cfg->SystemIoBusNumber,
+                              R->RangeStart, R->RangeLength, (BOOLEAN)!R->RangeInMemory);
+    for (t = 0; p == NULL && t < GOYA_COUNT(types); t++)
+        for (b = 0; p == NULL && b < 2; b++)
+            p = StorPortGetDeviceBase(X, types[t], b ? Cfg->SystemIoBusNumber : 0,
+                                      R->RangeStart, R->RangeLength, (BOOLEAN)!R->RangeInMemory);
+    return p;
+}
+
 static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Args,
                              PPORT_CONFIGURATION_INFORMATION Cfg, PBOOLEAN Again)
 {
@@ -260,11 +277,9 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
         PACCESS_RANGE r = &(*Cfg->AccessRanges)[i];
         if (r->RangeLength == 0) continue;
         if (!X->Sd.Regs && r->RangeLength >= 0x100) {
-            X->Sd.Regs = (volatile UCHAR *)StorPortGetDeviceBase(X, Cfg->AdapterInterfaceType,
-                Cfg->SystemIoBusNumber, r->RangeStart, r->RangeLength, (BOOLEAN)!r->RangeInMemory);
+            X->Sd.Regs = (volatile UCHAR *)DeviceBase(X, Cfg, r);
         } else if (!X->Apmu && r->RangeLength >= 8) {
-            X->Apmu = (PUCHAR)StorPortGetDeviceBase(X, Cfg->AdapterInterfaceType,
-                Cfg->SystemIoBusNumber, r->RangeStart, r->RangeLength, (BOOLEAN)!r->RangeInMemory);
+            X->Apmu = (PUCHAR)DeviceBase(X, Cfg, r);
         }
     }
     /* What Storport handed over (overwritten later by the card values if all goes well):
@@ -308,8 +323,14 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
     Cfg->NumberOfBuses = 1;
     Cfg->MaximumNumberOfTargets = 1;
     Cfg->MaximumNumberOfLogicalUnits = 1;
+    /* Build 8520's Storport fails the start with STATUS_DEVICE_CONFIGURATION_ERROR (C0000182) unless
+       NeedPhysicalAddresses, TaggedQueuing, ScatterGather and Master are all TRUE (storport+0x1EDA0),
+       even for a polled PIO miniport. Requests are still completed one by one in StartIo. */
     Cfg->ScatterGather = TRUE;
     Cfg->Master = TRUE;
+    Cfg->NeedPhysicalAddresses = TRUE;
+    Cfg->TaggedQueuing = TRUE;
+    Cfg->MultipleRequestPerLu = TRUE;
     Cfg->CachesData = FALSE;
     Cfg->MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
     Cfg->InitiatorBusId[0] = 7;
@@ -671,9 +692,9 @@ ULONG DriverEntry(PVOID DriverObject, PVOID RegistryPath)
         h.NumberOfAccessRanges = 2;
         h.MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
         h.NeedPhysicalAddresses = TRUE;
-        h.TaggedQueuing = FALSE;
+        h.TaggedQueuing = TRUE;                 /* required by Storport, see GoyaFindAdapter_ */
         h.AutoRequestSense = TRUE;
-        h.MultipleRequestPerLu = FALSE;
+        h.MultipleRequestPerLu = TRUE;
         st = StorPortInitialize(DriverObject, RegistryPath, &h, NULL);
         if (st == 0 || best != 0) best = st;
     }
