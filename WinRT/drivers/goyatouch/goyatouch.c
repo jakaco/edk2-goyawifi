@@ -93,6 +93,7 @@
 #define Z_X_RES          0x00c0
 #define Z_Y_RES          0x00c1
 #define Z_INT_ENABLE     0x00f0
+#define Z_PERIODIC_INT   0x00f1     /* periodical interrupt interval in scans (Samsung bt532_ts.c ESD) */
 #define Z_ICON_STATUS    0x00aa
 #define Z_VENDOR_ENABLE  0xc000
 #define Z_PROGRAM_START  0xc001
@@ -118,6 +119,10 @@
 #define GPIO_GCDR        0x60
 #define MFPR_GPIO94_PHYS 0xD401E224ULL
 #define SUB_BIT_EXIST     0x01
+/* ESD watchdog as in Samsung's bt532_ts.c: the chip raises an interrupt every 100 scans (~1 s) even
+   without a touch; if it stays silent for 3 s it has locked up and is initialised again. */
+#define Z_SCAN_HZ         100
+#define WD_TICKS          (3000 / POLL_MS)
 #define Z_RETRIES 8
 
 typedef struct _DEV_EXT {
@@ -136,12 +141,14 @@ typedef struct _DEV_EXT {
     BOOLEAN        Removed;
     ULONG          InitTries;
     LONG           LastX, LastY;
+    ULONG          Tick;            /* poll counter (POLL_MS each) */
+    ULONG          LastAlive;       /* Tick of the last sign of life from the chip */
 } DEV_EXT;
 
 /* status shown by the heartbeat thread */
 static volatile ULONG gStage, gInit = 0xFFFFFFFF, gInfo, gChip, gReports;
 static volatile ULONG gLastStatus, gLastSub, gReadFails, gNonZero, gRejected;
-static volatile ULONG gPolls, gRaw4, gReadback, gIntInfo, gIntLow;
+static volatile ULONG gPolls, gRaw4, gReadback, gIntInfo, gIntLow, gWatchdog;
 static PUCHAR gGpio;                 /* mapped GPIO block (read-only use + GCDR) */
 
 /* extra status lines below all drivers' values: "5 <n> <value>", n = 2.. */
@@ -177,7 +184,8 @@ static VOID HeartbeatThread(PVOID Context)
         }
         /* 5 2: polls done | 5 3: INT_ENABLE readback (high) TOUCH_MODE readback (low) |
            5 4: GPIO94 MFPR (high 16) | direction (bit 4, 1 = output) | level now (bit 0) | 5 5: first 4 raw bytes
-           of the last point-status read | 5 6: polls that saw the interrupt line low */
+           of the last point-status read | 5 6: polls that saw the interrupt line low |
+           5 7: chip re-initialisations by the ESD watchdog (high 16) | read-failure re-inits (low 16) */
         TraceExtra(2, gPolls);
         TraceExtra(3, gReadback);
         if (gGpio != NULL) {
@@ -188,6 +196,7 @@ static VOID HeartbeatThread(PVOID Context)
         TraceExtra(4, gIntInfo);
         TraceExtra(5, gRaw4);
         TraceExtra(6, gIntLow);
+        TraceExtra(7, gWatchdog);
     } while (KeWaitForSingleObject(&gHbStop, Executive, KernelMode, FALSE, &t) == STATUS_TIMEOUT);
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
@@ -395,6 +404,7 @@ static NTSTATUS ZInitChip(DEV_EXT *E)
     CHK(ZCmd(E, Z_CALIBRATE));
     CHK(ZWriteU16(E, Z_INT_ENABLE, BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP | BIT_ICON_EVENT));
     for (i = 0; i < 10; i++) { ZCmd(E, Z_CLEAR_INT); KeStallExecutionProcessor(15); }
+    CHK(ZWriteU16(E, Z_PERIODIC_INT, Z_SCAN_HZ));          /* heartbeat interrupt ~1 s, for the watchdog */
     {
         USHORT ie = 0, tm = 0;
         ZReadU16(E, Z_INT_ENABLE, &ie);
@@ -429,6 +439,16 @@ static VOID SendMouse(DEV_EXT *E, LONG X, LONG Y, USHORT ButtonFlags)
 
 /* ---- polling ---------------------------------------------------------------------------------- */
 
+/* The chip is about to be initialised again: a finger that was down is reported as lifted, so Windows
+   does not keep the left button held. */
+static VOID ReleaseButton(DEV_EXT *E)
+{
+    if (E->Down) {
+        SendMouse(E, E->LastX, E->LastY, MOUSE_LEFT_BUTTON_UP);
+        E->Down = FALSE;
+    }
+}
+
 static VOID PollOnce(DEV_EXT *E)
 {
     UCHAR raw[4 + 6 * NFINGERS];
@@ -443,10 +463,14 @@ static VOID PollOnce(DEV_EXT *E)
     if (intLow) gIntLow++;
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
         gReadFails++;
+        gWatchdog = (gWatchdog & 0xFFFF0000) | ((gWatchdog + 1) & 0xFFFF);
+        ReleaseButton(E);
         E->Initialized = FALSE;                             /* chip lost: re-initialise */
+        E->InitTries = 0;
         return;
     }
     status = (USHORT)(raw[0] | (raw[1] << 8));
+    if (intLow || status != 0) E->LastAlive = E->Tick;      /* an interrupt (touch or heartbeat) */
     gRaw4 = ((ULONG)raw[0] << 24) | ((ULONG)raw[1] << 16) | ((ULONG)raw[2] << 8) | raw[3];
     if (status == 0) {
         /* The vendor interrupt handler always ends with CLEAR_INT, also when the status is 0. The chip
@@ -493,6 +517,7 @@ static VOID PollOnce(DEV_EXT *E)
 
 static VOID PollStep(DEV_EXT *E, ULONG Tick)
 {
+    E->Tick = Tick;
     if (!E->Initialized) {
         /* every 0.5 s for the first 20 tries, then every 5 s (a missing chip costs CPU: polled I2C) */
         if (Tick % (E->InitTries < 20 ? 50 : 500) == 0) {
@@ -506,7 +531,15 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
                 gInfo = ((gLastIbmr & 3) << 28) | ((E->Clock ? (READ_REGISTER_ULONG(E->Clock) & 0xFF) : 0xEE) << 16) | (gLastIsr & 0xFFFF);
             }
             E->Initialized = (BOOLEAN)NT_SUCCESS(st);
+            if (E->Initialized) { E->LastAlive = Tick; E->InitTries = 0; }
         }
+        return;
+    }
+    if (Tick - E->LastAlive > WD_TICKS) {                   /* no interrupt for 3 s: chip locked up */
+        gWatchdog += 0x10000;
+        ReleaseButton(E);
+        E->Initialized = FALSE;
+        E->InitTries = 0;
         return;
     }
     PollOnce(E);
