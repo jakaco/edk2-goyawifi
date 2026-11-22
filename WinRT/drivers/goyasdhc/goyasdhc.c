@@ -17,11 +17,13 @@
  * On-screen status (id 1, same layout as common/goyatrace.h, which cannot be used with the Storport
  * headers): top right "1 <stage>", below it four values:
  *   stages  00 DriverEntry  01 FindAdapter  02 adapter found  0E no register range  03 HwInitialize
- *           04 card init  05 card ready  0F card init failed  06 request after init
+ *           04 card init  05 card ready  0F card init failed  06 first request
  *   1 0  card: bits 31:28 speed level, 27 4-bit, 26 high speed, 25 SDHC/XC, 23:0 size in MB
  *   1 1  requests: bits 31:24 last SCSI opcode, 23:16 failed requests, 15:0 requests
  *   1 2  last error: bits 31:28 SD_STATUS, 27:0 SDHCI interrupt status of the failing command
  *   1 3  StorPortInitialize status at load, then the SDHCI present-state register at card init
+ *   1 4  stage history, newest stage in the low byte
+ *   1 5  other requests: bits 31:24 last non-SCSI SRB function, 23:16 its status, 15:0 count
  * Every Storport callback runs inside __try/__except: an exception becomes a red line at the top left
  * (1, site, code, image offset, address) and a failed request instead of a stop.
  *
@@ -67,6 +69,7 @@ extern UCHAR __ImageBase;
 
 static PULONG gFb;
 static LONG   gCaught;
+static ULONG  gHist;
 static const USHORT gGlyph[16] = {
     0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7292,
     0x7BEF, 0x7BCF, 0x2BED, 0x6BAE, 0x7927, 0x6B6E, 0x79E7, 0x79E4
@@ -94,22 +97,23 @@ static ULONG TrHex(ULONG X, ULONG Y, ULONG Value, ULONG Digits, ULONG Fg, ULONG 
     return X + Digits * 4 * GT_SCALE + GT_SCALE * 2;
 }
 
+/* slots 0..5: rows 7..12 (rows 9..12 belong to goyapinmux and goyagpio, which are not on the card) */
+static VOID TrValue(ULONG Slot, ULONG Value)
+{
+    ULONG x = GT_FB_W - 12 * 4 * GT_SCALE, y = 8 + (7 + Slot) * 6 * GT_SCALE;
+    if (!gFb || Slot > 5) return;
+    x = TrHex(x, y, GT_ID, 1, 0x00FFFFFF, 0x00202020);
+    x = TrHex(x, y, Slot, 1, 0x00808080, 0x00202020);
+    TrHex(x, y, Value, 8, 0x0000FFFF, 0x00202020);
+}
+
 static VOID TrStep(ULONG Site)
 {
     ULONG x = GT_FB_W - 12 * 4 * GT_SCALE, y = 8;
     if (!gFb) return;
+    if ((gHist & 0xFF) != Site || gHist == 0) { gHist = (gHist << 8) | Site; TrValue(4, gHist); }
     x = TrHex(x, y, GT_ID, 1, 0x00FFFFFF, 0x00202020);
     TrHex(x, y, Site, 2, 0x0000FF00, 0x00202020);
-}
-
-/* slots 0..3: rows 7..10 (rows 9/10 belong to goyapinmux, which is not on the card by default) */
-static VOID TrValue(ULONG Slot, ULONG Value)
-{
-    ULONG x = GT_FB_W - 12 * 4 * GT_SCALE, y = 8 + (7 + Slot) * 6 * GT_SCALE;
-    if (!gFb || Slot > 3) return;
-    x = TrHex(x, y, GT_ID, 1, 0x00FFFFFF, 0x00202020);
-    x = TrHex(x, y, Slot, 1, 0x00808080, 0x00202020);
-    TrHex(x, y, Value, 8, 0x0000FFFF, 0x00202020);
 }
 
 typedef struct { ULONG *Record; PVOID Context; } TR_EXPTRS;   /* EXCEPTION_POINTERS */
@@ -181,7 +185,7 @@ typedef struct _GOYA_EXT {
     BOOLEAN  InitDone;
     UCHAR    Sense[3];                  /* key, asc, ascq of the last error */
     ULONG    InitFails;                 /* consecutive failed card initialisations */
-    ULONG    Ios, Fails;
+    ULONG    Ios, Fails, Others;
     UCHAR    LastOp;
 } GOYA_EXT, *PGOYA_EXT;
 
@@ -287,14 +291,13 @@ static BOOLEAN GoyaPassiveInit_(PVOID Ext)
     return TRUE;                        /* keep the adapter; I/O will retry the card init */
 }
 
-static BOOLEAN GoyaPassiveInit(PVOID Ext);
-
+/* The card is initialised right here (DISPATCH_LEVEL, no interrupt connected; usually well under a
+   second). Build 8520's Storport accepted StorPortEnablePassiveInitialization but never called the
+   routine, and the adapter then never enumerated its disk. */
 static BOOLEAN GoyaInitialize_(PVOID Ext)
 {
-    /* Card init can take ~1 s: do it at PASSIVE_LEVEL when allowed (not in dump mode). */
     TrStep(0x03);
-    if (StorPortEnablePassiveInitialization(Ext, GoyaPassiveInit)) return TRUE;
-    return GoyaPassiveInit(Ext);
+    return GoyaPassiveInit_(Ext);
 }
 
 static BOOLEAN GoyaInterrupt(PVOID Ext)
@@ -566,13 +569,6 @@ static ULONG GoyaFindAdapter(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Ar
     return r;
 }
 
-static BOOLEAN GoyaPassiveInit(PVOID Ext)
-{
-    BOOLEAN r = TRUE;
-    TR_GUARD(0x04, r = GoyaPassiveInit_(Ext), r = TRUE);
-    return r;
-}
-
 static BOOLEAN GoyaInitialize(PVOID Ext)
 {
     BOOLEAN r = TRUE;
@@ -597,12 +593,17 @@ static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl(PVOID Ext, SCSI_ADAPTER_CO
 static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
-    if (X->Ios == 0) TrStep(0x06);
-    X->Ios++;
-    X->LastOp = (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI) ? Srb->Cdb[0] : 0xFF;
+    if (X->Ios == 0 && X->Others == 0) TrStep(0x06);
     TR_GUARD(0x06, GoyaStartIo_(Ext, Srb), Srb->SrbStatus = SRB_STATUS_ERROR);
-    if (SRB_STATUS(Srb->SrbStatus) != SRB_STATUS_SUCCESS) X->Fails++;
-    TrValue(1, ((ULONG)X->LastOp << 24) | ((X->Fails & 0xFF) << 16) | (X->Ios & 0xFFFF));
+    if (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI) {
+        X->Ios++;
+        X->LastOp = Srb->Cdb[0];
+        if (SRB_STATUS(Srb->SrbStatus) != SRB_STATUS_SUCCESS) X->Fails++;
+        TrValue(1, ((ULONG)X->LastOp << 24) | ((X->Fails & 0xFF) << 16) | (X->Ios & 0xFFFF));
+    } else {
+        X->Others++;
+        TrValue(5, ((ULONG)Srb->Function << 24) | ((ULONG)Srb->SrbStatus << 16) | (X->Others & 0xFFFF));
+    }
     StorPortNotification(RequestComplete, Ext, Srb);
     return TRUE;
 }
