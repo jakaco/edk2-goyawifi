@@ -298,13 +298,16 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
         }
     }
     /* What Storport handed over (overwritten later by the card values if all goes well):
-       1 0 / 1 1 = start of range 0 / 1, 1 2 = count (31:28), range 0 in memory (24), range 0 length,
+       1 0 = start of range 0, 1 1 = interrupt (see below), 1 2 = count (31:28), range 0 in memory (24), range 0 length,
        1 3 = interface type (31:16), bit 1 = registers mapped by Storport, bit 0 = APMU range mapped */
     {
         PACCESS_RANGE r0 = Cfg->NumberOfAccessRanges > 0 ? &(*Cfg->AccessRanges)[0] : NULL;
         PACCESS_RANGE r1 = Cfg->NumberOfAccessRanges > 1 ? &(*Cfg->AccessRanges)[1] : NULL;
         TrValue(0, r0 ? r0->RangeStart.LowPart : 0);
-        TrValue(1, r1 ? r1->RangeStart.LowPart : 0);
+        /* 1 1 = the interrupt Storport found: mode (31:28, 0 level, 1 latched), level (27:16), vector */
+        TrValue(1, ((ULONG)Cfg->InterruptMode << 28) | ((Cfg->BusInterruptLevel & 0xFFF) << 16) |
+                   (Cfg->BusInterruptVector & 0xFFFF));
+        UNREFERENCED_PARAMETER(r1);
         TrValue(2, (Cfg->NumberOfAccessRanges << 28) | (r0 && r0->RangeInMemory ? 1UL << 24 : 0) |
                    (r0 ? r0->RangeLength & 0x00FFFFFF : 0));
         TrValue(3, ((ULONG)Cfg->AdapterInterfaceType << 16) | (X->Sd.Regs ? 2 : 0) | (X->Apmu ? 1 : 0));
