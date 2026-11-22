@@ -118,14 +118,14 @@ def call(fn, args, stack_pa, stack_va, budget=50_000_000):
 B = DATA_PA
 import pefile
 pe = pefile.PE(sys.argv[2], fast_load=True)
-text = [x for x in pe.sections if x.Name.startswith(b'.text')][0].get_data()
+text = pe.get_memory_mapped_image()      # whole image (the PatchGuard site is in INIT)
 pages = (len(text) + 0xfff) // 0x1000
 wr32(B + 0x20, 0)
 r = call(rd32(BS + 32), [0, 2, pages, B + 0x20, 0], STACK_PA, STACK_PA)   # AllocatePages(AnyPages, EfiLoaderData, n, &addr) (64-bit addr)
 KADDR = rd32(B + 0x20)
 print(f'AllocatePages(LoaderData) -> {r:#x} at {KADDR:#x}')
 mu.mem_write(KADDR, text)
-TEXTVA = pe.OPTIONAL_HEADER.ImageBase + [x for x in pe.sections if x.Name.startswith(b'.text')][0].VirtualAddress
+TEXTVA = pe.OPTIONAL_HEADER.ImageBase
 
 pSize, pKey, pDsz, pVer, MAP = B, B + 4, B + 8, B + 12, B + 0x1000
 wr32(pSize, 0x8000)
@@ -135,7 +135,7 @@ r = call(rd32(BS + 128), [0, rd32(pKey)], STACK_PA, STACK_PA, budget=500_000_000
 print(f'ExitBootServices -> {r:#x}' if r is not None else 'ExitBootServices failed')
 
 
-for site in (0x496382, 0x496c44):
-    print(f'site {site:#x}: {bytes(mu.mem_read(KADDR + site - TEXTVA, 4)).hex()}')
+for site, n in ((0x496382, 4), (0x496c44, 4), (0x89edce, 2)):   # expect 00bf00bf, 00bf00bf, 0022
+    print(f'site {site:#x}: {bytes(mu.mem_read(KADDR + site - TEXTVA, n)).hex()}')
 px = struct.unpack('<I', mu.mem_read(0x17000000 + ((600-10)*1024 + 1024-10)*4, 4))[0]
 print(f'marker pixel {px:#010x}')

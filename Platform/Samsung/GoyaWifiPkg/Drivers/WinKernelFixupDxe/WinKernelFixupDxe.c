@@ -18,6 +18,10 @@
   (PRCB fields stay zero) and never touches the debug registers again:
   hardware breakpoints are simply unavailable, which nothing in WinPE needs.
 
+  A third site keeps PatchGuard from touching DBGDSCRext: its check routines
+  run minutes after boot from encrypted copies in pool and would otherwise
+  stop Windows with KMODE_EXCEPTION_NOT_HANDLED C000001D (see mSites).
+
   Byte patterns are taken from ntoskrnl.exe 6.2.8520.0 (fbl_eeap.120722-1632).
   The code is position independent (relative branches, PC-relative
   literals), so the bytes are the same wherever the image was loaded. If the
@@ -25,10 +29,10 @@
 
   A small square in the bottom-right corner of the screen reports the result
   (it stays visible behind the Windows logo and the stop screen):
-    green  = both sites patched      yellow = only one site found
+    green  = all sites patched       yellow = only some sites found
     red    = not found (other kernel build or not Windows)
-    cyan   = both sites patched, and an asynchronous abort was pending and has been taken here
-    blue   = both sites patched, an asynchronous abort is pending and could not be taken here
+    cyan   = all sites patched, and an asynchronous abort was pending and has been taken here
+    blue   = all sites patched, an asynchronous abort is pending and could not be taken here
 
   Asynchronous (imprecise) aborts: a RELEASE firmware runs with them masked (ArmPkg CpuDxe only
   unmasks them in DEBUG builds), so a bus error caused by firmware code stays pending and is
@@ -108,7 +112,9 @@ typedef struct {
   CONST CHAR8    *Name;
   UINT8          Pattern[24];
   UINTN          Length;
-  UINTN          PatchOffset;     // offset of the 4-byte BL to replace
+  UINTN          PatchOffset;     // offset of the bytes to replace
+  UINT8          Patch[4];
+  UINTN          PatchLength;
 } KERNEL_SITE;
 
 STATIC CONST KERNEL_SITE  mSites[] = {
@@ -118,19 +124,29 @@ STATIC CONST KERNEL_SITE  mSites[] = {
     "KiInitializeProcessor debug init",
     { 0x10, 0xee, 0x51, 0x3f, 0x13, 0xf0, 0x0f, 0x03, 0x04, 0x2b, 0xd3, 0xf0,
       0xf9, 0xad, 0x00, 0xf0, 0xd1, 0xf9, 0xbd, 0xe8, 0x0c, 0x88 },
-    22, 14
+    22, 14, { 0x00, 0xbf, 0x00, 0xbf }, 4                   // nop; nop
   },
   //  ldr r3,=<flag>; ldrb r3,[r3]; cbz r3,...; bl <KiInitializeDebugRegisters>
   {
     "resume path debug init",
     { 0x0f, 0x4b, 0x1b, 0x78, 0x9b, 0xb1, 0xff, 0xf7, 0x70, 0xfd },
-    10, 6
+    10, 6, { 0x00, 0xbf, 0x00, 0xbf }, 4                    // nop; nop
+  },
+  //  PatchGuard context setup (INIT): ldr r3,=<CP14 debug present flag>; ldrb r2,[r3];
+  //  ldrb r3,[r8,#0x2e8]; eor r3,r3,r2,lsl #5; ands r2,r3,#0x20  -> context flag 0x20.
+  //  With 0x20 set, the PatchGuard check routines (INITKDBG code that runs minutes after boot from
+  //  encrypted copies in pool) save and clear DBGDSCRext with MRC/MCR p14,0,rX,c0,c2,2, which is
+  //  UNDEFINED here: KMODE_EXCEPTION_NOT_HANDLED C000001D at an address in no module, after a few
+  //  idle minutes. ldrb r2,[r3] -> movs r2,#0 keeps 0x20 clear in every context. INIT runs before
+  //  PatchGuard takes its baseline and is discarded afterwards, so nothing checks this change.
+  {
+    "PatchGuard CP14 debug flag",
+    { 0x1a, 0x78, 0x98, 0xf8, 0xe8, 0x32, 0x83, 0xea, 0x42, 0x13, 0x13, 0xf0, 0x20, 0x02 },
+    14, 0, { 0x00, 0x22 }, 2                                // movs r2,#0
   },
 };
 
 #define SITE_COUNT  (sizeof (mSites) / sizeof (mSites[0]))
-
-STATIC CONST UINT8  mThumbNop2[4] = { 0x00, 0xbf, 0x00, 0xbf };   // nop; nop
 
 STATIC EFI_EVENT              mExitBootServicesEvent;
 STATIC EFI_MEMORY_DESCRIPTOR  *mMap;
@@ -183,9 +199,9 @@ ScanRegion (
       if ((*P == First[S]) && (CompareMem (P, mSites[S].Pattern, mSites[S].Length) == 0)) {
         UINT8  *Bl = (UINT8 *)P + mSites[S].PatchOffset;
 
-        CopyMem (Bl, mThumbNop2, sizeof (mThumbNop2));
-        WriteBackInvalidateDataCacheRange (Bl, sizeof (mThumbNop2));
-        InvalidateInstructionCacheRange (Bl, sizeof (mThumbNop2));
+        CopyMem (Bl, mSites[S].Patch, mSites[S].PatchLength);
+        WriteBackInvalidateDataCacheRange (Bl, mSites[S].PatchLength);
+        InvalidateInstructionCacheRange (Bl, mSites[S].PatchLength);
         Found[S]++;
         DEBUG ((DEBUG_INFO, "WinKernelFixup: patched %a at %p\n", mSites[S].Name, Bl));
       }
