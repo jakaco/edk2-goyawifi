@@ -12,16 +12,15 @@ rem
 rem    disk#        the microSD card's disk number (diskpart "list disk" or
 rem                 Get-Disk). THE WHOLE CARD IS ERASED. Internal and boot disks
 rem                 are refused.
-rem    install.wim  YOUR Windows RT 8.0 install image (sources\install.wim of your
+rem    install.wim  YOUR Windows RT 8.0 install image (sources\install.wim of your ARM media, or the media folder itself;
 rem                 ARM media; .esd also works with a Windows 10 DISM). Nothing is
 rem                 downloaded by this script.
 rem    index        image index inside the wim, default 1 (the list is shown first)
 rem    /nounattend  do not copy unattend.xml (you go through OOBE by hand; only
 rem                 sensible once touch works)
 rem
-rem  Layout written to the card: GPT (MBR fallback on old diskpart builds)
-rem    SYSTEM  260 MB FAT32  \EFI\Boot\bootarm.efi + BCD   <- the firmware boots this
-rem    MSR      16 MB        (GPT only)
+rem  Layout written to the card: MBR (Windows refuses GPT system partitions on removable media)
+rem    SYSTEM  260 MB FAT32  \EFI\Boot\bootarm.efi + BCD   <- the firmware boots this (active)
 rem    Windows  rest  NTFS
 rem
 rem  Then: Goya drivers from ..\drivers (DISM /ForceUnsigned), the Goya test certificate
@@ -47,7 +46,11 @@ set DP=%TEMP%\goya-diskpart.txt
 net session >nul 2>&1 || (echo Needs an elevated prompt ^(Run as administrator^). & exit /b 1)
 if "%DISK%"=="" goto usage
 if "%~2"=="" goto usage
+rem a media folder (or its sources folder) instead of the image file: use sources\install.wim/.esd
+if exist "%WIM%\sources\install.wim" (set "WIM=%WIM%\sources\install.wim") else if exist "%WIM%\sources\install.esd" (set "WIM=%WIM%\sources\install.esd") else if exist "%WIM%\install.wim" (set "WIM=%WIM%\install.wim") else if exist "%WIM%\install.esd" (set "WIM=%WIM%\install.esd")
+if exist "%WIM%\*" (echo No sources\install.wim or install.esd in %WIM% & exit /b 1)
 if not exist "%WIM%" (echo Image not found: %WIM% & exit /b 1)
+echo Image: %WIM%
 if not exist "%DRV%\goyasdhc.inf" (echo Missing drivers: %DRV%\goyasdhc.inf ^(keep the kit folder layout^). & exit /b 1)
 if not exist "%DRV%\goyasdhc.sys" (echo Missing %DRV%\goyasdhc.sys & exit /b 1)
 if not exist "%DRV%\HalExtMmpTimer.dll" (echo Missing %DRV%\HalExtMmpTimer.dll & exit /b 1)
@@ -81,39 +84,25 @@ if not defined S (echo No free drive letter. & exit /b 1)
 if not defined W (echo No free drive letter. & exit /b 1)
 
 echo === 1/6 partitioning disk %DISK% (SYSTEM=%S%: Windows=%W%:)
+rem MBR: Windows on the PC refuses EFI/MSR partitions on removable media (card readers), and its
+rem diskpart does not always return an error for it. MBR with a FAT32 system partition and an NTFS
+rem Windows partition is the Windows To Go layout; EDK2 boots \EFI\Boot\bootarm.efi from it.
 > "%DP%" (
   echo select disk %DISK%
   echo clean
-  echo convert gpt
-  echo create partition efi size=260
+  echo convert mbr
+  echo create partition primary size=260
   echo format fs=fat32 quick label=SYSTEM
   echo assign letter=%S%
-  echo create partition msr size=16
+  echo active
   echo create partition primary
   echo format fs=ntfs quick label=WindowsRT
   echo assign letter=%W%
   echo exit
 )
 diskpart /s "%DP%"
-if errorlevel 1 (
-  echo GPT on this removable card failed, using MBR ^(EDK2 boots both^).
-  > "%DP%" (
-    echo select disk %DISK%
-    echo clean
-    echo convert mbr
-    echo create partition primary size=260
-    echo format fs=fat32 quick label=SYSTEM
-    echo assign letter=%S%
-    echo active
-    echo create partition primary
-    echo format fs=ntfs quick label=WindowsRT
-    echo assign letter=%W%
-    echo exit
-  )
-  diskpart /s "%DP%" || goto fail
-)
-if not exist %S%:\ goto fail
-if not exist %W%:\ goto fail
+if not exist %S%:\ (echo Partitioning failed: no %S%: ^(SYSTEM^). & goto fail)
+if not exist %W%:\ (echo Partitioning failed: no %W%: ^(WindowsRT^). & goto fail)
 
 echo === 2/6 applying image index %IDX% to %W%:\ (takes a while on an SD card)
 dism /Apply-Image /ImageFile:"%WIM%" /Index:%IDX% /ApplyDir:%W%:\ || goto fail
