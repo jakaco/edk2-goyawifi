@@ -172,8 +172,15 @@ if not exist %W%:\Windows\Setup\Scripts mkdir %W%:\Windows\Setup\Scripts
 copy /y "%HERE%SetupComplete.cmd" %W%:\Windows\Setup\Scripts\SetupComplete.cmd >nul
 mountvol %S%: /d >nul 2>&1
 
+echo === finishing: write everything to the card and dismount it
+rem Without this, cached writes can still be pending when the card is pulled, the volume is left
+rem dirty, and the tablet runs a disk check at first boot (very slow with the polled SD driver).
+fsutil dirty query %W%: | findstr /i /c:"is Dirty" >nul && (echo   %W%: is marked dirty - checking it now & chkdsk %W%: /f /x)
+fsutil volume dismount %W%: >nul
+fsutil volume dismount %S%: >nul
+echo   card flushed and dismounted - you can remove it now
 echo.
-echo Done. Eject the card (Windows partition was %W%:), put it in the tablet and boot
+echo Done. Remove the card (Windows partition was %W%:), put it in the tablet and boot
 echo the EDK2 firmware goyawifi-uefi-winrt-release.img (RTC fixed to 2012-08-01).
 echo The first boot runs Windows setup (specialize + OOBE) and can take a long time
 echo on an SD card with a polled driver. Afterwards C:\goya\diag.txt on the card
