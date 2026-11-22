@@ -175,9 +175,10 @@ table.
 
 ## Next
 
-* **goyasdhc speed**: stop busy-waiting while the card stores a write (finish
-  the request from a timer), copy the data register directly; later DMA plus
-  the real interrupt.
+* **goyasdhc speed**: done in code, testing on hardware: requests are finished
+  from Storport's timer when the card stalls for more than 0.5 ms (instead of
+  spinning at DISPATCH_LEVEL), and data goes through the data port directly.
+  Later: DMA plus the real interrupt.
 * **Charger driver**: under Windows the tablet does not charge (the SMB328
   watchdog stops charging after the firmware hands over).
 * Power key and screen brightness; the second CPU core (firmware support for
