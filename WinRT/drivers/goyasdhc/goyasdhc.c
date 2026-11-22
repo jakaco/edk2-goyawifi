@@ -13,9 +13,14 @@
  *   - card-detect override in Host Control 1 (the slot's detect line is GPIO 11, not the CD pin),
  *   - optional second memory range = APMU SDH0/SDH1 clock registers; the clock is re-enabled if the
  *     firmware left it off.
- * Requests are executed synchronously in HwStartIo (Storport serialises StartIo calls). StartIo runs at
- * DISPATCH_LEVEL, so a card that does not initialise is retried only a few times (then reported as
- * not ready until a bus reset), never on every request: a dead card must not stall the system.
+ * Requests: StartIo runs at DISPATCH_LEVEL, where spinning stops everything else on the CPU. A read or
+ * write is started in StartIo and copied as long as the card keeps delivering/accepting blocks; when
+ * the card stalls for IDLE_US (mostly while it programs written data), the request is finished later
+ * from Storport's timer (RequestTimerCall) and the CPU is free meanwhile. Requests that arrive in the
+ * meantime wait in a FIFO. StartIo and the timer both run at DISPATCH_LEVEL on the single CPU that
+ * Windows uses here (onecpu, CPU1 disabled in the MADT), so they never run at the same time. Errors in
+ * the fast path repeat the request synchronously with retries and a slower clock. A card that does not
+ * initialise is retried only a few times (then reported as not ready until a bus reset).
  *
  * On-screen status (id 1, same layout as common/goyatrace.h, which cannot be used with the Storport
  * headers): top right "1 <stage>", below it four values:
@@ -24,6 +29,7 @@
  *           0A registers mapped by Storport  0B registers mapped by goyasdhc (no usable range)
  *   1 0  card: bits 31:28 speed level, 27 4-bit, 26 high speed, 25 SDHC/XC, 23:0 size in MB
  *   1 1  requests: bits 31:24 last SCSI opcode, 23:16 failed requests, 15:0 requests
+ *   1 2  last error, or once requests are finished from the timer: 0xD000_0000 | number of them
  *   1 2  last error: bits 31:28 SD_STATUS, 27:0 SDHCI interrupt status of the failing command
  *   1 3  StorPortInitialize status at load, then the SDHCI present-state register at card init
  *   1 4  stage history, newest stage in the low byte
@@ -57,6 +63,7 @@
 #define SD_WR32(c, o, v)  StorPortWriteRegisterUlong((c)->Os, (PULONG)((c)->Regs + (o)), (ULONG)(v))
 #define SD_STALL(us)      StorPortStallExecution(us)
 #define SD_LOG(...)       StorPortDebugPrint(0, __VA_ARGS__)
+#define SD_DATA_PORT(c)   ((volatile ULONG *)((c)->Regs + SDHC_BUFFER))   /* direct access, no call per word */
 
 #include "sdcore.c"
 
@@ -194,6 +201,10 @@ static LONG TrFilter(PVOID Info, ULONG Site)
 #define KEY_ILLEGAL_REQUEST  0x05
 
 #define MAX_XFER_BLOCKS      128        /* 64 KiB per request */
+#define IDLE_US              500        /* card silent this long: finish the request from the timer */
+#define TIMER_US             1000       /* timer request (it fires at the next clock tick, ~10-15 ms) */
+#define MAX_TIMER_POLLS      1000       /* >= 1 s (timer at least 1 ms) before a transfer is abandoned */
+#define Q_MAX                128
 
 static volatile UCHAR *gShared[3];     /* SDH1, SDH2, SDH3 register bases that are safe to read */
 
@@ -205,6 +216,14 @@ typedef struct _GOYA_EXT {
     ULONG    InitFails;                 /* consecutive failed card initialisations */
     ULONG    Ios, Fails, Others;
     UCHAR    LastOp;
+    /* request whose transfer continues from the timer, and the ones waiting behind it */
+    PSCSI_REQUEST_BLOCK Cur;
+    BOOLEAN  CurWrite;
+    ULONGLONG CurLba;
+    ULONG    CurN, CurPolls, Deferred;
+    PUCHAR   CurData;
+    PSCSI_REQUEST_BLOCK Q[Q_MAX];
+    ULONG    QHead, QCount;
 } GOYA_EXT, *PGOYA_EXT;
 
 static VOID QuietSharedLine(PGOYA_EXT X);
@@ -423,6 +442,8 @@ static VOID QuietSharedLine(PGOYA_EXT X)
 static BOOLEAN GoyaResetBus_(PVOID Ext, ULONG PathId)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
+    if (X->Cur) { SdXferAbort(&X->Sd); X->Cur = NULL; }   /* StorPortCompleteRequest below completes it */
+    X->QCount = 0;                                          /* ... and every queued request */
     X->Sd.Ready = FALSE;
     X->InitFails = 0;
     GoyaInitCard(X);
@@ -501,11 +522,35 @@ static BOOLEAN EnsureCard(PGOYA_EXT X)
     return X->Sd.Ready;
 }
 
-static VOID DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
+/* Synchronous transfer with retries, speed fallback and re-initialisation (sdcore SdTransfer). */
+static VOID SyncRw(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write, ULONGLONG lba, ULONG n, PUCHAR data)
+{
+    ULONG done = 0;
+    SD_STATUS st;
+    while (n) {
+        ULONG chunk = n > MAX_XFER_BLOCKS ? MAX_XFER_BLOCKS : n;
+        st = SdTransfer(&X->Sd, (BOOLEAN)!Write, lba, chunk, data + done * SD_BLOCK);
+        done += chunk;
+        if (st != SD_OK) {
+            X->Sd.LastIntSts = X->Sd.FailIntSts;
+            TrError(X, st);
+            SetSense(Srb, X, st == SD_ETIMEOUT || st == SD_ENOCARD ? KEY_HW_ERROR : KEY_MEDIUM_ERROR,
+                     Write ? 0x0C : 0x11, 0);
+            return;
+        }
+        lba += chunk; n -= chunk;
+    }
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+}
+
+static VOID GoyaTimer(PVOID Ext);
+
+/* Returns TRUE when the transfer continues from the timer (the request is not complete yet). */
+static BOOLEAN DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
 {
     const UCHAR *cdb = Srb->Cdb;
     ULONGLONG lba;
-    ULONG n, done;
+    ULONG n;
     SD_STATUS st;
     PUCHAR data = NULL;
 
@@ -521,29 +566,25 @@ static VOID DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
         lba = ((ULONGLONG)Be32(cdb + 2) << 32) | Be32(cdb + 6); n = Be32(cdb + 10); break;
     }
 
-    if (n == 0) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return; }
-    if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); return; }
-    if (lba + n > X->Sd.Blocks) { SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x21, 0); return; }
+    if (n == 0) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return FALSE; }
+    if (!EnsureCard(X)) { SetSense(Srb, X, KEY_NOT_READY, 0x3A, 0); return FALSE; }
+    if (lba + n > X->Sd.Blocks) { SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x21, 0); return FALSE; }
     if ((ULONGLONG)n * SD_BLOCK > Srb->DataTransferLength || (data = SrbData(X, Srb)) == NULL) {
-        SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x24, 0); return;
+        SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x24, 0); return FALSE;
     }
 
-    done = 0;
-    while (n) {
-        ULONG chunk = n > MAX_XFER_BLOCKS ? MAX_XFER_BLOCKS : n;
-        PUCHAR p = data + done * SD_BLOCK;
-        st = SdTransfer(&X->Sd, (BOOLEAN)!Write, lba, chunk, p);
-        done += chunk;
-        if (st != SD_OK) {
-            X->Sd.LastIntSts = X->Sd.FailIntSts;
-            TrError(X, st);
-            SetSense(Srb, X, st == SD_ETIMEOUT || st == SD_ENOCARD ? KEY_HW_ERROR : KEY_MEDIUM_ERROR,
-                     Write ? 0x0C : 0x11, 0);
-            return;
+    if (n <= MAX_XFER_BLOCKS && SdXferBegin(&X->Sd, (BOOLEAN)!Write, lba, n, data) == SD_OK) {
+        st = SdXferPoll(&X->Sd, IDLE_US);
+        if (st == SD_OK) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return FALSE; }
+        if (st == SD_PENDING) {
+            X->Cur = Srb; X->CurWrite = Write; X->CurLba = lba; X->CurN = n; X->CurData = data; X->CurPolls = 0;
+            StorPortNotification(RequestTimerCall, X, GoyaTimer, TIMER_US);
+            return TRUE;
         }
-        lba += chunk; n -= chunk;
+        /* error: fall through, the synchronous path retries */
     }
-    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+    SyncRw(X, Srb, Write, lba, n, data);
+    return FALSE;
 }
 
 static VOID DoInquiry(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
@@ -589,7 +630,8 @@ static VOID DoModeSense(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Ten)
     ReturnData(X, Srb, d, len);
 }
 
-static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
+/* Returns TRUE when the request continues from the timer. */
+static BOOLEAN DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
 {
     UCHAR d[32];
     RtlZeroMemory(d, sizeof(d));
@@ -621,11 +663,9 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
         ReturnData(X, Srb, d, 32);
         break;
     case OP_READ6: case OP_READ10: case OP_READ12: case OP_READ16:
-        DoReadWrite(X, Srb, FALSE);
-        break;
+        return DoReadWrite(X, Srb, FALSE);
     case OP_WRITE6: case OP_WRITE10: case OP_WRITE12: case OP_WRITE16:
-        DoReadWrite(X, Srb, TRUE);
-        break;
+        return DoReadWrite(X, Srb, TRUE);
     case OP_MODE_SENSE6:  DoModeSense(X, Srb, FALSE); break;
     case OP_MODE_SENSE10: DoModeSense(X, Srb, TRUE);  break;
     case OP_REPORT_LUNS:
@@ -641,9 +681,11 @@ static VOID DoScsi(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
         SetSense(Srb, X, KEY_ILLEGAL_REQUEST, 0x20, 0);
         break;
     }
+    return FALSE;
 }
 
-static VOID GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
+/* Returns TRUE when the request continues from the timer. */
+static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
 
@@ -651,7 +693,7 @@ static VOID GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
     case SRB_FUNCTION_EXECUTE_SCSI:
         if (Srb->PathId != 0 || Srb->TargetId != 0) Srb->SrbStatus = SRB_STATUS_SELECTION_TIMEOUT;
         else if (Srb->Lun != 0) Srb->SrbStatus = SRB_STATUS_INVALID_LUN;
-        else { Srb->ScsiStatus = 0; DoScsi(X, Srb); }
+        else { Srb->ScsiStatus = 0; return DoScsi(X, Srb); }
         break;
     case SRB_FUNCTION_RESET_BUS:
     case SRB_FUNCTION_RESET_DEVICE:
@@ -671,6 +713,79 @@ static VOID GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
     default:
         Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         break;
+    }
+    return FALSE;
+}
+
+/* ---- request completion, queue, timer ---- */
+
+static VOID Complete(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
+{
+    if (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI) {
+        X->Ios++;
+        X->LastOp = Srb->Cdb[0];
+        if (SRB_STATUS(Srb->SrbStatus) != SRB_STATUS_SUCCESS) X->Fails++;
+        TrValue(1, ((ULONG)X->LastOp << 24) | ((X->Fails & 0xFF) << 16) | (X->Ios & 0xFFFF));
+    } else {
+        X->Others++;
+        TrValue(5, ((ULONG)Srb->Function << 24) | ((ULONG)Srb->SrbStatus << 16) | (X->Others & 0xFFFF));
+    }
+    StorPortNotification(RequestComplete, X, Srb);
+}
+
+/* Start one request; completes it unless its transfer continues from the timer. */
+static VOID Process(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb)
+{
+    BOOLEAN pending = FALSE;
+    TR_GUARD(0x06, pending = GoyaStartIo_(X, Srb), (pending = FALSE, Srb->SrbStatus = SRB_STATUS_ERROR));
+    if (pending && X->Cur == Srb) return;
+    if (X->Cur == Srb) { SdXferAbort(&X->Sd); X->Cur = NULL; Srb->SrbStatus = SRB_STATUS_ERROR; }  /* exception */
+    Complete(X, Srb);
+}
+
+static VOID RunQueue(PGOYA_EXT X)
+{
+    while (X->Cur == NULL && X->QCount != 0) {
+        PSCSI_REQUEST_BLOCK Srb = X->Q[X->QHead];
+        X->QHead = (X->QHead + 1) % Q_MAX;
+        X->QCount--;
+        Process(X, Srb);
+    }
+}
+
+static VOID GoyaTimer_(PGOYA_EXT X)
+{
+    PSCSI_REQUEST_BLOCK Srb = X->Cur;
+    SD_STATUS st;
+
+    if (Srb == NULL) { RunQueue(X); return; }
+    st = SdXferPoll(&X->Sd, IDLE_US);
+    if (st == SD_PENDING) {
+        if (++X->CurPolls < MAX_TIMER_POLLS) {
+            StorPortNotification(RequestTimerCall, X, GoyaTimer, TIMER_US);
+            return;
+        }
+        st = SdXferAbort(&X->Sd);
+    }
+    X->Cur = NULL;
+    if (st == SD_OK) Srb->SrbStatus = SRB_STATUS_SUCCESS;
+    else SyncRw(X, Srb, X->CurWrite, X->CurLba, X->CurN, X->CurData);   /* retries, slower clock */
+    X->Deferred++;
+    TrValue(2, 0xD0000000UL | (X->Deferred & 0x0FFFFFFF));
+    Complete(X, Srb);
+    RunQueue(X);
+}
+
+static VOID GoyaTimer(PVOID Ext)
+{
+    PGOYA_EXT X = (PGOYA_EXT)Ext;
+    TR_GUARD(0x09, GoyaTimer_(X), X->Sd.XPhase = 0);
+    if (X->Sd.XPhase == 0 && X->Cur != NULL) {              /* an exception left a request behind */
+        PSCSI_REQUEST_BLOCK Srb = X->Cur;
+        X->Cur = NULL;
+        Srb->SrbStatus = SRB_STATUS_ERROR;
+        Complete(X, Srb);
+        RunQueue(X);
     }
 }
 
@@ -708,18 +823,18 @@ static SCSI_ADAPTER_CONTROL_STATUS GoyaAdapterControl(PVOID Ext, SCSI_ADAPTER_CO
 static BOOLEAN GoyaStartIo(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
 {
     PGOYA_EXT X = (PGOYA_EXT)Ext;
-    if (X->Ios == 0 && X->Others == 0) TrStep(0x06);
-    TR_GUARD(0x06, GoyaStartIo_(Ext, Srb), Srb->SrbStatus = SRB_STATUS_ERROR);
-    if (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI) {
-        X->Ios++;
-        X->LastOp = Srb->Cdb[0];
-        if (SRB_STATUS(Srb->SrbStatus) != SRB_STATUS_SUCCESS) X->Fails++;
-        TrValue(1, ((ULONG)X->LastOp << 24) | ((X->Fails & 0xFF) << 16) | (X->Ios & 0xFFFF));
-    } else {
-        X->Others++;
-        TrValue(5, ((ULONG)Srb->Function << 24) | ((ULONG)Srb->SrbStatus << 16) | (X->Others & 0xFFFF));
+    if (X->Ios == 0 && X->Others == 0 && X->Cur == NULL) TrStep(0x06);
+    if (X->Cur != NULL || X->QCount != 0) {                 /* a transfer runs from the timer: wait */
+        if (X->QCount < Q_MAX) {
+            X->Q[(X->QHead + X->QCount) % Q_MAX] = Srb;
+            X->QCount++;
+        } else {
+            Srb->SrbStatus = SRB_STATUS_BUSY;               /* Storport retries it */
+            Complete(X, Srb);
+        }
+        return TRUE;
     }
-    StorPortNotification(RequestComplete, Ext, Srb);
+    Process(X, Srb);
     return TRUE;
 }
 

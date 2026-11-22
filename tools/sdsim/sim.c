@@ -16,6 +16,8 @@ typedef uint64_t ULONGLONG; typedef void *PVOID; typedef uint8_t *PUCHAR;
 static uint8_t R[0x100];
 static uint64_t now_us;
 static int opt_v3 = 1, opt_sdhc = 1, opt_require_cd = 1, opt_crc_every = 0, opt_no_cmd6 = 0;
+static unsigned opt_busy_us = 0;             /* card programming time after the last written block */
+static uint64_t busy_until;
 static unsigned crc_counter;
 
 #define CARD_BLOCKS (32768 * 2)              /* 32 MiB card */
@@ -119,7 +121,9 @@ static void finish_block(void)
     if (blocks_left > 0) {
         if (xfer_read) load_block(); else { fifo_pos = 0; raise(0x10); }
     } else {
-        cstate = ST_TRAN; raise(2);
+        cstate = ST_TRAN;
+        if (!xfer_read && opt_busy_us) busy_until = now_us + opt_busy_us;   /* TC once programming is done */
+        else raise(2);
     }
 }
 
@@ -132,6 +136,7 @@ static uint32_t hw_rd(int o, int sz)
         if (fifo_pos == fifo_len) { if (fifo_len == 64) { blocks_left = 0; cstate = ST_TRAN; raise(2); } else finish_block(); }
         return v;
     }
+    if (o == 0x30 && busy_until && now_us >= busy_until) { busy_until = 0; raise(2); }
     if (o == 0x24) {
         uint32_t p = 0x00F00000;                         /* DAT lines high */
         if ((R[0x28] & 0xC0) == 0xC0 || !opt_require_cd) p |= 0x00070000;
@@ -169,6 +174,21 @@ static int verbose = 1;
 #define SD_LOG(...)       do { if (verbose) printf(__VA_ARGS__); } while (0)
 #include "../../WinRT/drivers/goyasdhc/sdcore.c"
 
+/* As goyasdhc does it: asynchronous transfer, polled with a short idle budget (each SD_PENDING = one
+   timer interval of 1 ms); on an error the request is repeated with SdTransfer (retries, fallback). */
+static SD_STATUS async_xfer(SD_HOST *h, BOOLEAN read, ULONGLONG lba, ULONG n, uint8_t *b, unsigned *pend)
+{
+    SD_STATUS st = SdXferBegin(h, read, lba, n, b);
+    if (st == SD_OK) {
+        while ((st = SdXferPoll(h, 500)) == SD_PENDING) {
+            if (pend) (*pend)++;
+            now_us += 1000;
+        }
+    }
+    if (st != SD_OK) st = SdTransfer(h, read, lba, n, b);
+    return st;
+}
+
 static int run(const char *name)
 {
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
@@ -185,6 +205,22 @@ static int run(const char *name)
     if (SdTransfer(&h, FALSE, 1000, 64, chk) != SD_OK || memcmp(chk, disk + 1000 * 512, 64 * 512)) { printf("FAIL write multi\n"); return 1; }
     if (SdTransfer(&h, FALSE, CARD_BLOCKS - 1, 1, chk) != SD_OK || memcmp(chk, disk + (size_t)(CARD_BLOCKS - 1) * 512, 512)) { printf("FAIL write last\n"); return 1; }
     if (SdTransfer(&h, TRUE, CARD_BLOCKS - 1, 2, buf) != SD_EPARAM) { printf("FAIL range check\n"); return 1; }
+    /* asynchronous path (goyasdhc: StartIo + timer) */
+    {
+        unsigned pend = 0;
+        for (int i = 0; i < 128 * 512; i++) chk[i] = (uint8_t)rand();
+        if (async_xfer(&h, FALSE, 2000, 128, chk, &pend) != SD_OK || memcmp(chk, disk + 2000 * 512, 128 * 512)) { printf("FAIL async write\n"); return 1; }
+        if (opt_busy_us > 500 && pend == 0) { printf("FAIL async write never deferred\n"); return 1; }
+        if (async_xfer(&h, TRUE, 2000, 128, buf, NULL) != SD_OK || memcmp(buf, chk, 128 * 512)) { printf("FAIL async read\n"); return 1; }
+        if (async_xfer(&h, FALSE, 3000, 1, chk, NULL) != SD_OK || memcmp(chk, disk + 3000 * 512, 512)) { printf("FAIL async single\n"); return 1; }
+        if (opt_busy_us > 500) {                       /* abort a deferred write, then the card must still work */
+            if (SdXferBegin(&h, FALSE, 4000, 8, chk) != SD_OK) { printf("FAIL abort begin\n"); return 1; }
+            while (SdXferPoll(&h, 500) != SD_PENDING) ;
+            SdXferAbort(&h);
+            if (SdTransfer(&h, TRUE, 100, 8, buf) != SD_OK || memcmp(buf, disk + 100 * 512, 8 * 512)) { printf("FAIL after abort\n"); return 1; }
+        }
+        printf("async ok (write deferred %u times)\n", pend);
+    }
     printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount);
     return 0;
 }
@@ -198,7 +234,8 @@ int main(void)
     opt_v3 = 1; opt_sdhc = 0; f |= run("SDSC v1 card (no CMD8, byte addressing)");
     opt_sdhc = 1; opt_no_cmd6 = 1; f |= run("card without CMD6");
     opt_no_cmd6 = 0; opt_crc_every = 37; f |= run("data CRC error every 37 blocks (retry/fallback)");
-    opt_crc_every = 0;
+    opt_crc_every = 0; opt_busy_us = 20000; f |= run("card busy 20 ms after writes (deferred completion)");
+    opt_busy_us = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;
 }

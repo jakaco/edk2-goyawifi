@@ -6,6 +6,7 @@
  *   SD_RD8/16/32(c, off), SD_WR8/16/32(c, off, v)   register access on SD_HOST *c
  *   SD_STALL(us)                                     busy wait
  *   SD_LOG(fmt, ...)                                 debug print (may be empty)
+ *   SD_DATA_PORT(c)  (optional) volatile ULONG * to the buffer data port, for the fast block copy
  *   ULONG/USHORT/UCHAR/BOOLEAN/ULONGLONG types, TRUE/FALSE
  *
  * Nothing here depends on an OS SD stack: Windows 8.0 RT has no sdport.sys, and the inbox
@@ -103,9 +104,14 @@ typedef struct _SD_HOST {
     ULONG     LastIntSts;
     ULONG     FailIntSts;
     ULONG     ErrorCount;
+    /* asynchronous transfer (SdXferBegin / SdXferPoll) */
+    PUCHAR    XBuf;
+    ULONG     XCount, XDone;
+    BOOLEAN   XRead;
+    UCHAR     XPhase;             /* 0 idle, 1 data blocks, 2 waiting for transfer complete (write busy) */
 } SD_HOST;
 
-typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM } SD_STATUS;
+typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM, SD_PENDING } SD_STATUS;
 
 static ULONG SdCsdBits(const ULONG *r, ULONG lsb, ULONG len)
 {
@@ -249,28 +255,66 @@ static SD_STATUS SdWaitTran(SD_HOST *c)
     return SD_ETIMEOUT;
 }
 
+/* One block through the buffer data port. With SD_DATA_PORT the port is read/written directly (one
+   load/store per word instead of a call per word); word stores when the buffer is aligned. */
+static VOID SdFifoIn(SD_HOST *c, PUCHAR buf, ULONG words)
+{
+    ULONG i;
+#ifdef SD_DATA_PORT
+    volatile ULONG *port = SD_DATA_PORT(c);
+    if (((ULONG_PTR)buf & 3) == 0) {
+        ULONG *d = (ULONG *)buf;
+        for (i = 0; i < words; i++) d[i] = *port;
+        return;
+    }
+    for (i = 0; i < words; i++) {
+        ULONG w = *port;
+        buf[0] = (UCHAR)w; buf[1] = (UCHAR)(w >> 8); buf[2] = (UCHAR)(w >> 16); buf[3] = (UCHAR)(w >> 24);
+        buf += 4;
+    }
+#else
+    for (i = 0; i < words; i++) {
+        ULONG w = SD_RD32(c, SDHC_BUFFER);
+        buf[0] = (UCHAR)w; buf[1] = (UCHAR)(w >> 8); buf[2] = (UCHAR)(w >> 16); buf[3] = (UCHAR)(w >> 24);
+        buf += 4;
+    }
+#endif
+}
+
+static VOID SdFifoOut(SD_HOST *c, const UCHAR *buf, ULONG words)
+{
+    ULONG i;
+#ifdef SD_DATA_PORT
+    volatile ULONG *port = SD_DATA_PORT(c);
+    if (((ULONG_PTR)buf & 3) == 0) {
+        const ULONG *s = (const ULONG *)buf;
+        for (i = 0; i < words; i++) *port = s[i];
+        return;
+    }
+#endif
+    for (i = 0; i < words; i++) {
+        ULONG w = (ULONG)buf[0] | ((ULONG)buf[1] << 8) | ((ULONG)buf[2] << 16) | ((ULONG)buf[3] << 24);
+#ifdef SD_DATA_PORT
+        *port = w;
+#else
+        SD_WR32(c, SDHC_BUFFER, w);
+#endif
+        buf += 4;
+    }
+}
+
 /* PIO data phase of the command just issued */
 static SD_STATUS SdPio(SD_HOST *c, BOOLEAN read, PUCHAR buf, ULONG blocks, ULONG blksz)
 {
-    ULONG b, i, s, words = blksz / 4;
+    ULONG b, s, words = blksz / 4;
     ULONG need = read ? INT_BRR : INT_BWR;
 
     for (b = 0; b < blocks; b++) {
         s = SdWaitInt(c, need, 1000000);
         if (!(s & need) || (s & INT_ERRMASK)) { c->LastIntSts = s; return s ? SD_EDATA : SD_ETIMEOUT; }
         SD_WR32(c, SDHC_INTSTS, need);
-        if (read) {
-            for (i = 0; i < words; i++) {
-                ULONG w = SD_RD32(c, SDHC_BUFFER);
-                buf[0] = (UCHAR)w; buf[1] = (UCHAR)(w >> 8); buf[2] = (UCHAR)(w >> 16); buf[3] = (UCHAR)(w >> 24);
-                buf += 4;
-            }
-        } else {
-            for (i = 0; i < words; i++) {
-                SD_WR32(c, SDHC_BUFFER, (ULONG)buf[0] | ((ULONG)buf[1] << 8) | ((ULONG)buf[2] << 16) | ((ULONG)buf[3] << 24));
-                buf += 4;
-            }
-        }
+        if (read) SdFifoIn(c, buf, words); else SdFifoOut(c, buf, words);
+        buf += words * 4;
     }
     s = SdWaitInt(c, INT_TC, 2000000);              /* writes: includes card programming busy */
     c->LastIntSts = s;
@@ -394,6 +438,77 @@ static SD_STATUS SdXferOnce(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count
         SdWaitTran(c);
     }
     return st;
+}
+
+/* ---- asynchronous transfer: begin, then poll until done ------------------------------------------
+   For a caller that cannot afford to spin while the card is busy (goyasdhc runs at DISPATCH_LEVEL):
+   SdXferPoll copies blocks as long as the card delivers or accepts them and returns SD_PENDING when
+   nothing has happened for IdleUs microseconds (typically while the card programs written data); the
+   caller polls again later. No retries here: on an error the transfer is cleaned up and the caller
+   repeats the request with SdTransfer (retries, slower clock, re-initialisation). */
+
+static SD_STATUS SdXferFail(SD_HOST *c, SD_STATUS st)
+{
+    c->FailIntSts = c->LastIntSts;
+    SdRecover(c);
+    if (c->XCount > 1) SdCmd(c, 12, 0, R_R1B | CMD_ABORT, 0, NULL);
+    SdWaitTran(c);
+    c->XPhase = 0;
+    return st;
+}
+
+static SD_STATUS SdXferBegin(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count, PUCHAR buf)
+{
+    ULONG arg = c->HighCap ? (ULONG)lba : (ULONG)(lba * SD_BLOCK);
+    USHORT xfer = read ? XFER_READ : 0;
+    ULONG idx;
+    SD_STATUS st;
+
+    if (!c->Ready || count == 0 || count > 0xFFFF || lba + count > c->Blocks) return SD_EPARAM;
+    if (count > 1) { xfer |= XFER_MULTI | XFER_BLKCNT_EN | XFER_ACMD12; idx = read ? 18 : 25; }
+    else idx = read ? 17 : 24;
+    SD_WR16(c, SDHC_BLKSIZE, 0x7000 | SD_BLOCK);
+    SD_WR16(c, SDHC_BLKCOUNT, (USHORT)count);
+    c->XCount = count;
+    st = SdCmd(c, idx, arg, R_R1 | CMD_DATA, xfer, NULL);
+    if (st != SD_OK) return SdXferFail(c, st);
+    c->XBuf = buf; c->XDone = 0; c->XRead = read; c->XPhase = 1;
+    return SD_OK;
+}
+
+static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
+{
+    ULONG need = c->XRead ? INT_BRR : INT_BWR, idle = IdleUs, s;
+
+    if (c->XPhase == 0) return SD_EPARAM;
+    for (;;) {
+        s = SD_RD32(c, SDHC_INTSTS);
+        if (s & (INT_ERRSUM | INT_ERRMASK)) { c->LastIntSts = s; return SdXferFail(c, SD_EDATA); }
+        if (c->XPhase == 1 && (s & need)) {
+            SD_WR32(c, SDHC_INTSTS, need);
+            if (c->XRead) SdFifoIn(c, c->XBuf, SD_BLOCK / 4); else SdFifoOut(c, c->XBuf, SD_BLOCK / 4);
+            c->XBuf += SD_BLOCK;
+            if (++c->XDone == c->XCount) c->XPhase = 2;
+            idle = IdleUs;                                /* progress: the idle budget starts again */
+            continue;
+        }
+        if (c->XPhase == 2 && (s & INT_TC)) {
+            SD_WR32(c, SDHC_INTSTS, INT_TC);
+            c->LastIntSts = s;
+            c->XPhase = 0;
+            return SD_OK;
+        }
+        if (idle == 0) return SD_PENDING;
+        SD_STALL(5); idle = idle > 5 ? idle - 5 : 0;
+    }
+}
+
+/* Give up on a pending asynchronous transfer (timeout or reset). */
+static SD_STATUS SdXferAbort(SD_HOST *c)
+{
+    if (c->XPhase == 0) return SD_ETIMEOUT;
+    c->LastIntSts = SD_RD32(c, SDHC_INTSTS);
+    return SdXferFail(c, SD_ETIMEOUT);
 }
 
 /* Read/write with retries; on repeated failure drop speed and reinitialise the card. */
