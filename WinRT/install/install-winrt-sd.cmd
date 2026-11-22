@@ -122,13 +122,19 @@ echo === 3/6 drivers (goya*.inf; the HAL extension is registered directly in ste
 rem goyagpio is left out: the pre-release 8520 GPIO class extension stops Windows with
 rem SYSTEM_THREAD_EXCEPTION_NOT_HANDLED when it starts, and nothing needs it (goyakeys reads the GPIO
 rem register directly, goyatouch polls). Set GOYA_GPIO=1 to add it anyway.
+rem goyapinmux is left out too (linked to intermittent stops, its MFPR mask is not trimmed yet);
+rem GOYA_PINMUX=1 adds it.
 for %%I in ("%DRV%\goya*.inf") do (
   if /i "%%~nI"=="goyagpio" if not "%GOYA_GPIO%"=="1" (echo   skipping %%~nxI) else (
     echo   adding %%~nxI
     dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
   )
   if /i "%%~nI"=="goyai2c" echo   skipping %%~nxI ^(goyatouch drives the I2C1 controller itself^)
-  if /i not "%%~nI"=="goyagpio" if /i not "%%~nI"=="goyai2c" (
+  if /i "%%~nI"=="goyapinmux" if not "%GOYA_PINMUX%"=="1" (echo   skipping %%~nxI ^(mask not trimmed yet; GOYA_PINMUX=1 adds it^)) else (
+    echo   adding %%~nxI
+    dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
+  )
+  if /i not "%%~nI"=="goyagpio" if /i not "%%~nI"=="goyai2c" if /i not "%%~nI"=="goyapinmux" (
     echo   adding %%~nxI
     dism /Image:%W%:\ /Add-Driver /Driver:"%%~fI" /ForceUnsigned >nul || goto fail
   )
