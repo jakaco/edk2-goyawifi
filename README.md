@@ -10,6 +10,8 @@ UEFI firmware (TianoCore EDK2) for the **Samsung Galaxy Tab 3 Lite 7.0 Wi-Fi
 > keys**. Full working / not working list: [Hardware status](#hardware-status).
 > DEBUG builds print their log **on the screen**, so no UART is needed (see
 > [Debugging](#debugging)).
+>
+> How Windows RT was brought up, step by step: [BRINGUP-LOG.md](BRINGUP-LOG.md).
 
 ## How it boots
 
