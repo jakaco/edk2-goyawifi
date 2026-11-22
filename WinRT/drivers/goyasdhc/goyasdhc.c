@@ -18,6 +18,7 @@
  * headers): top right "1 <stage>", below it four values:
  *   stages  00 DriverEntry  01 FindAdapter  02 adapter found  0E no register range  03 HwInitialize
  *           04 card init  05 card ready  0F card init failed  06 first request
+ *           0A registers mapped by Storport  0B registers mapped by goyasdhc (no usable range)
  *   1 0  card: bits 31:28 speed level, 27 4-bit, 26 high speed, 25 SDHC/XC, 23:0 size in MB
  *   1 1  requests: bits 31:24 last SCSI opcode, 23:16 failed requests, 15:0 requests
  *   1 2  last error: bits 31:28 SD_STATUS, 27:0 SDHCI interrupt status of the failing command
@@ -138,6 +139,10 @@ static LONG TrFilter(PVOID Info, ULONG Site)
 
 #define TR_GUARD(Site, Body, OnException) \
     do { __try { Body; } __except (TrFilter(_exception_info(), Site)) { OnException; } } while (0)
+
+/* fallback physical addresses (same as the DSDT _CRS of \_SB.SDH1) */
+#define SDH1_PHYS         0xD4280000ULL
+#define APMU_SDH_PHYS     0xD4282854ULL
 
 /* APMU SDH clock control (offsets inside the optional 0xD4282854 range) */
 #define APMU_SDH0_OFF     0x0
@@ -262,6 +267,35 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
                 Cfg->SystemIoBusNumber, r->RangeStart, r->RangeLength, (BOOLEAN)!r->RangeInMemory);
         }
     }
+    /* What Storport handed over (overwritten later by the card values if all goes well):
+       1 0 / 1 1 = start of range 0 / 1, 1 2 = count (31:28), range 0 in memory (24), range 0 length,
+       1 3 = interface type (31:16), bit 1 = registers mapped by Storport, bit 0 = APMU range mapped */
+    {
+        PACCESS_RANGE r0 = Cfg->NumberOfAccessRanges > 0 ? &(*Cfg->AccessRanges)[0] : NULL;
+        PACCESS_RANGE r1 = Cfg->NumberOfAccessRanges > 1 ? &(*Cfg->AccessRanges)[1] : NULL;
+        TrValue(0, r0 ? r0->RangeStart.LowPart : 0);
+        TrValue(1, r1 ? r1->RangeStart.LowPart : 0);
+        TrValue(2, (Cfg->NumberOfAccessRanges << 28) | (r0 && r0->RangeInMemory ? 1UL << 24 : 0) |
+                   (r0 ? r0->RangeLength & 0x00FFFFFF : 0));
+        TrValue(3, ((ULONG)Cfg->AdapterInterfaceType << 16) | (X->Sd.Regs ? 2 : 0) | (X->Apmu ? 1 : 0));
+    }
+
+    /* Build 8520's Storport did not give us a usable register range (stage 0E on hardware): map the
+       controller and the APMU clock registers ourselves. Register access goes through the
+       StorPortRead/WriteRegister routines either way. */
+    if (!X->Sd.Regs) {
+        PHYSICAL_ADDRESS pa;
+        pa.QuadPart = SDH1_PHYS;
+        X->Sd.Regs = (volatile UCHAR *)MmMapIoSpace(pa, 0x1000, 0 /* MmNonCached */);
+        if (X->Sd.Regs) TrStep(0x0B);
+    } else {
+        TrStep(0x0A);
+    }
+    if (!X->Apmu) {
+        PHYSICAL_ADDRESS pa;
+        pa.QuadPart = APMU_SDH_PHYS;
+        X->Apmu = (PUCHAR)MmMapIoSpace(pa, 8, 0 /* MmNonCached */);
+    }
     if (!X->Sd.Regs) { TrStep(0x0E); return SP_RETURN_BAD_CONFIG; }
 
     /* make sure a stale firmware setting can never raise an interrupt */
@@ -382,6 +416,7 @@ static VOID  PutBe32(PUCHAR p, ULONG v) { p[0] = (UCHAR)(v >> 24); p[1] = (UCHAR
    ready without trying again, until a bus/device reset or a restart clears the count. */
 static BOOLEAN EnsureCard(PGOYA_EXT X)
 {
+    if (!X->Sd.Regs) return FALSE;
     if (!X->Sd.Ready && X->InitFails < 3) GoyaInitCard(X);
     return X->Sd.Ready;
 }
