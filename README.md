@@ -238,13 +238,11 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
 
 **Under investigation**
 
-* Random KMODE_EXCEPTION_NOT_HANDLED with C000001D (illegal instruction) while
-  WinPE runs with touch working, at an address outside every loaded module
-  (seen once: 82C584E3). Suspects: the 1066 MHz / 1.175 V operating point
-  (DVFS is now off in the Windows firmware build) or a jump into freed or
-  non-code memory. goyabug now shows the instruction bytes, the owning image
-  (by its PDB name, also for images missing from the module list), unloaded
-  drivers, the caller from the trap frame, uptime and the current process.
+* Random KMODE_EXCEPTION_NOT_HANDLED with C000001D after a few idle minutes:
+  PatchGuard's check routines (ntoskrnl INITKDBG code, run from encrypted
+  copies in pool, so "in no module") read DBGDSCRext through CP14, which is
+  fused off on this Cortex-A9. WinKernelFixupDxe now clears the flag that
+  makes them do it (third patch site). Fix not yet confirmed on hardware.
 
 **Not available**
 
