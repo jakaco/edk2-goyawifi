@@ -208,7 +208,7 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
   (GIC 71), now unused.
   Long card waits (mostly while the card stores written data) are finished
   from Storport's timer instead of spinning, and data goes through the
-  controller's data port directly (speed-up not yet confirmed on hardware).
+  controller's data port directly: noticeably smoother on hardware.
 * **goyabug** (bugcheck callback): loads early ("7 01"); draws the stop code,
   parameters and the faulting driver on the stop screen.
 * Display through the firmware framebuffer (1024x600).

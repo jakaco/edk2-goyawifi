@@ -175,7 +175,7 @@ table.
 
 ## Next
 
-* **goyasdhc speed**: done in code, testing on hardware: requests are finished
+* **goyasdhc speed**: done, smoother on hardware: requests are finished
   from Storport's timer when the card stalls for more than 0.5 ms (instead of
   spinning at DISPATCH_LEVEL), and data goes through the data port directly.
   Later: DMA plus the real interrupt.
