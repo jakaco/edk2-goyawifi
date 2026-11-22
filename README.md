@@ -195,6 +195,15 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
   BT532 at 0x20 like the vendor driver; it clears the chip interrupt whenever
   INT (GPIO94, pull-up on) is low.
 * **goyakeys** (KMDF lower filter under mshidkmdf): Vol Up, Vol Down and Home.
+* **goyasdhc** (Storport microSD miniport, polled PIO): the microSD card works
+  in WinPE as a disk with a drive letter. On WinPE cards by default
+  (`GOYA_SDHC=0` leaves it out). Build 8520's Storport needed:
+  `TaggedQueuing` (with `NeedPhysicalAddresses`, `ScatterGather`, `Master`) or
+  the start fails with C0000182; `VirtualDevice` so it skips the interrupt
+  connection, DMA setup and `KeFlushIoBuffers` (otherwise stop 0xE6/0x1F on
+  buffers that aren't cache-line aligned); `StorPortGetDeviceBase` with the
+  interface type the resources carry. The DSDT also lists the SDH interrupt
+  (GIC 71), now unused.
 * **goyabug** (bugcheck callback): loads early ("7 01"); draws the stop code,
   parameters and the faulting driver on the stop screen.
 * Display through the firmware framebuffer (1024x600).
@@ -206,13 +215,6 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
 
 **Doesn't work / left off the card**
 
-* **goyasdhc** (Storport microSD miniport): back on the WinPE card by default
-  for testing (`GOYA_SDHC=0` leaves it out). It was left out while the random
-  early stops were blamed on it; those also happened without it. It now shows
-  its stage, card, request counters and last error on screen (`1 ...` lines),
-  catches exceptions in its own code, and stops retrying a card that won't
-  initialise. Without it Windows can't see the SD card after boot (WinPE runs
-  from its RAM disk).
 * **goyagpio** (GpioClx): the 8520 GPIO class extension stops with
   SYSTEM_THREAD_EXCEPTION_NOT_HANDLED. Left out.
 * **goyapinmux**: left off until its MFPR mask is trimmed.
@@ -227,7 +229,10 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
 
 * goyabug's test stop (Vol Up + Vol Down held 3 s → stop 0xE2).
 * goyaosk on-screen keyboard with touch.
-* Full Windows RT install on microSD (`install-winrt-sd.cmd`).
+* Full Windows RT install on microSD (`install-winrt-sd.cmd`): now possible to
+  try, since goyasdhc works as the boot disk driver.
+* goyasdhc write speed and reliability under load (only reads and a drive
+  letter confirmed so far).
 * Whether the random early stop is completely gone (one more since the timer
   fix, before the async-abort check).
 
