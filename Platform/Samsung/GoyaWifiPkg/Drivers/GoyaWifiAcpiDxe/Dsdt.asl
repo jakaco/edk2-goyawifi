@@ -82,16 +82,20 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
     }
     // microSD host (SDH1) = Windows boot disk. HID MRVL0007 binds goyasdhc (Storport miniport, boot
     // start, polled PIO). No _CID PNP0D40 on purpose: the inbox sdbus.sys must never take this
-    // controller (it cannot handle the PXAv3 quirks). No interrupt on purpose: the driver polls, so a
-    // stuck level interrupt can never storm. Second range = APMU SDH0/SDH1 clock registers.
+    // controller (it cannot handle the PXAv3 quirks). The driver polls; the interrupt below is only there
+    // for Storport (see the _CRS comment). Second range = APMU SDH0/SDH1 clock registers.
     // The firmware has already powered the slot (88PM822 LDO4/LDO5) and enabled the clocks.
     Device (SDH1) {
       Name (_HID, "MRVL0007")
       Name (_UID, 1)
       Method (_STA) { Return (0xF) }
+      // SPI 39 = GIC IRQ 71, shared by SDH1/SDH2/SDH3. goyasdhc polls and keeps every SDH signal
+      // enable at 0; the interrupt is listed only because Windows 8.0 (build 8520) Storport fails
+      // the adapter start with STATUS_NOT_FOUND when there is no interrupt resource.
       Name (_CRS, ResourceTemplate () {
         Memory32Fixed (ReadWrite, 0xD4280000, 0x1000)
         Memory32Fixed (ReadWrite, 0xD4282854, 0x8)
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 71 }
       })
     }
     // Pin multiplexer (MFPR block), driven by goyapinmux

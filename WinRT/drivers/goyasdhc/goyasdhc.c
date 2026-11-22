@@ -4,7 +4,10 @@
  * Windows 8.0 has no sdport.sys (the SD miniport model is Windows 10 only) and its inbox sdbus.sys
  * cannot cope with this controller's quirks, so this is a Storport miniport that exposes the card as
  * one fixed SCSI disk (LUN 0) and runs the SD protocol itself (sdcore.c):
- *   - polled PIO only: no interrupt, no DMA (works the same in normal, crash-dump and hibernate mode),
+ *   - polled PIO only, no DMA (works the same in normal, crash-dump and hibernate mode). The DSDT lists
+ *     the SDH interrupt (GIC 71, shared by SDH1/SDH2/SDH3) only because build 8520's Storport fails the
+ *     start without one; every SDH signal enable is kept at 0, and the interrupt routine silences any
+ *     controller that still signals, so the shared level interrupt can never storm,
  *   - 52 MHz base clock (capability register is not trusted), 3.3 V only,
  *     high-speed 26 MHz with automatic fallback to 13 / 6.5 MHz and 1-bit on errors,
  *   - card-detect override in Host Control 1 (the slot's detect line is GPIO 11, not the CD pin),
@@ -28,7 +31,7 @@
  * Every Storport callback runs inside __try/__except: an exception becomes a red line at the top left
  * (1, site, code, image offset, address) and a failed request instead of a stop.
  *
- * ACPI: \_SB.SDH1, HID MRVL0007, Memory32Fixed 0xD4280000/0x1000 [+ 0xD4282854/0x8], no interrupt.
+ * ACPI: \_SB.SDH1, HID MRVL0007, Memory32Fixed 0xD4280000/0x1000 [+ 0xD4282854/0x8], Interrupt 71.
  */
 #include <miniport.h>
 #include <storport.h>
@@ -140,6 +143,14 @@ static LONG TrFilter(PVOID Info, ULONG Site)
 #define TR_GUARD(Site, Body, OnException) \
     do { __try { Body; } __except (TrFilter(_exception_info(), Site)) { OnException; } } while (0)
 
+/* The other two SD controllers on the same interrupt line (Wi-Fi SDH2, eMMC SDH3) and their clock
+   registers (Linux clk-of-pxa988: APMU_SDH1 0x58 clocks 0xD4280800, APMU_SDH2 0xE0 clocks 0xD4281000).
+   They are only touched when their clock and reset bits are on. */
+#define SDH_WIFI_PHYS     0xD4280800ULL
+#define SDH_EMMC_PHYS     0xD4281000ULL
+#define APMU_EMMC_CLK     0xD42828E0ULL
+#define SDH_CLK_ON        0x0013          /* RST_N | AXI_RST_N | FCLK_EN */
+
 /* fallback physical addresses (same as the DSDT _CRS of \_SB.SDH1) */
 #define SDH1_PHYS         0xD4280000ULL
 #define APMU_SDH_PHYS     0xD4282854ULL
@@ -184,6 +195,8 @@ static LONG TrFilter(PVOID Info, ULONG Site)
 
 #define MAX_XFER_BLOCKS      128        /* 64 KiB per request */
 
+static volatile UCHAR *gShared[3];     /* SDH1, SDH2, SDH3 register bases that are safe to read */
+
 typedef struct _GOYA_EXT {
     SD_HOST  Sd;
     PUCHAR   Apmu;
@@ -193,6 +206,8 @@ typedef struct _GOYA_EXT {
     ULONG    Ios, Fails, Others;
     UCHAR    LastOp;
 } GOYA_EXT, *PGOYA_EXT;
+
+static VOID QuietSharedLine(PGOYA_EXT X);
 
 /* The microSD controller (0xD4280000, Linux "sdh1") is clocked by APMU_SDH0 (vendor DT:
    assigned-clocks = PXA988_CLK_SDH0), which also holds the shared AXI clock enable. */
@@ -316,6 +331,7 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
     /* make sure a stale firmware setting can never raise an interrupt */
     SD_WR32(&X->Sd, SDHC_SIGEN, 0);
     SD_WR32(&X->Sd, SDHC_INTSTS, 0xFFFFFFFF);
+    QuietSharedLine(X);
 
     Cfg->MaximumTransferLength = MAX_XFER_BLOCKS * SD_BLOCK;
     Cfg->NumberOfPhysicalBreaks = MAX_XFER_BLOCKS + 1;
@@ -355,10 +371,43 @@ static BOOLEAN GoyaInitialize_(PVOID Ext)
     return GoyaPassiveInit_(Ext);
 }
 
+/* Polled driver: nothing should ever signal. If a controller on the shared line does (its signal enable
+   was set by someone), switch its signal enable off and claim the interrupt, so the level line drops. */
 static BOOLEAN GoyaInterrupt(PVOID Ext)
 {
-    UNREFERENCED_PARAMETER(Ext);
-    return FALSE;                       /* polled; signal enables are always 0 */
+    BOOLEAN mine = FALSE;
+    ULONG i;
+    for (i = 0; i < 3; i++) {
+        volatile UCHAR *r = gShared[i];
+        if (r && (StorPortReadRegisterUlong(Ext, (PULONG)(r + SDHC_SIGEN)) &
+                  StorPortReadRegisterUlong(Ext, (PULONG)(r + SDHC_INTSTS)))) {
+            StorPortWriteRegisterUlong(Ext, (PULONG)(r + SDHC_SIGEN), 0);
+            mine = TRUE;
+        }
+    }
+    return mine;
+}
+
+/* Signal enables of the other SD controllers on the interrupt line to 0 (only if they are clocked). */
+static VOID QuietSharedLine(PGOYA_EXT X)
+{
+    PHYSICAL_ADDRESS pa;
+    PULONG clk;
+    gShared[0] = X->Sd.Regs;
+    if (X->Apmu && (StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH1_OFF)) & SDH_CLK_ON) == SDH_CLK_ON &&
+        (StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF)) & SDH_CLK_ACLK_EN)) {
+        pa.QuadPart = SDH_WIFI_PHYS;
+        gShared[1] = (volatile UCHAR *)MmMapIoSpace(pa, 0x100, 0);
+    }
+    pa.QuadPart = APMU_EMMC_CLK;
+    clk = (PULONG)MmMapIoSpace(pa, 4, 0);
+    if (clk && (StorPortReadRegisterUlong(X, clk) & SDH_CLK_ON) == SDH_CLK_ON && X->Apmu &&
+        (StorPortReadRegisterUlong(X, (PULONG)(X->Apmu + APMU_SDH0_OFF)) & SDH_CLK_ACLK_EN)) {
+        pa.QuadPart = SDH_EMMC_PHYS;
+        gShared[2] = (volatile UCHAR *)MmMapIoSpace(pa, 0x100, 0);
+    }
+    if (gShared[1]) StorPortWriteRegisterUlong(X, (PULONG)(gShared[1] + SDHC_SIGEN), 0);
+    if (gShared[2]) StorPortWriteRegisterUlong(X, (PULONG)(gShared[2] + SDHC_SIGEN), 0);
 }
 
 static BOOLEAN GoyaResetBus_(PVOID Ext, ULONG PathId)
