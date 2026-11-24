@@ -17,7 +17,10 @@ static uint8_t R[0x100];
 static uint64_t now_us;
 static int opt_v3 = 1, opt_sdhc = 1, opt_require_cd = 1, opt_crc_every = 0, opt_no_cmd6 = 0;
 static unsigned opt_busy_us = 0;             /* card programming time after the last written block */
-static uint64_t busy_until;
+static unsigned opt_drop_tc = 0;             /* every Nth write: transfer complete never raised (PXA986) */
+static unsigned tc_counter;
+static uint64_t busy_until;                  /* TC is raised at this time (0: none pending) */
+static uint64_t dat_busy_until;              /* the card holds DAT0 low until this time */
 static unsigned crc_counter;
 
 #define CARD_BLOCKS (32768 * 2)              /* 32 MiB card */
@@ -122,7 +125,10 @@ static void finish_block(void)
         if (xfer_read) load_block(); else { fifo_pos = 0; raise(0x10); }
     } else {
         cstate = ST_TRAN;
-        if (!xfer_read && opt_busy_us) busy_until = now_us + opt_busy_us;   /* TC once programming is done */
+        if (!xfer_read && opt_drop_tc && ++tc_counter % opt_drop_tc == 0) {
+            busy_until = 0;                                  /* card done, but TC is lost */
+            if (opt_busy_us) dat_busy_until = now_us + opt_busy_us;
+        } else if (!xfer_read && opt_busy_us) busy_until = dat_busy_until = now_us + opt_busy_us;   /* TC once programming is done */
         else raise(2);
     }
 }
@@ -139,7 +145,10 @@ static uint32_t hw_rd(int o, int sz)
     if (o == 0x30 && busy_until && now_us >= busy_until) { busy_until = 0; raise(2); }
     if (o == 0x24) {
         uint32_t p = 0x00F00000;                         /* DAT lines high */
+        int busy = now_us < dat_busy_until;              /* card programming: DAT0 low */
         if ((R[0x28] & 0xC0) == 0xC0 || !opt_require_cd) p |= 0x00070000;
+        if (busy) p &= ~0x00100000u;
+        if (busy || blocks_left > 0) p |= 0x2;           /* DAT_INHIBIT: data transfer or busy phase */
         return p;
     }
     if (o == 0x2C && sz == 2) { uint16_t v = rd16raw(0x2C); if (v & 1) v |= 2; return v; }
@@ -157,7 +166,7 @@ static void hw_wr(int o, int sz, uint32_t v)
         return;
     }
     if (o == 0x30 && sz == 4) { uint32_t st = rd32raw(0x30) & ~v; if (!(st & 0xFFFF0000)) st &= ~0x8000; wr32raw(0x30, st); return; }
-    if (o == 0x2F) { if (v & 1) { memset(R, 0, 0x40); } if (v & 6) { wr32raw(0x30, 0); } return; }
+    if (o == 0x2F) { if (v & 1) { memset(R, 0, 0x40); } if (v & 6) { wr32raw(0x30, 0); } if (v & 5) blocks_left = 0; return; }   /* DAT reset ends the data transaction */
     if (sz == 1) R[o] = v; else if (sz == 2) wr16raw(o, v); else wr32raw(o, v);
     if (o == 0x0E && sz == 2) docmd(v);
 }
@@ -193,6 +202,7 @@ static int run(const char *name)
 {
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
     cstate = ST_IDLE; app = 0; acmd41_count = 0; crc_counter = 0; hs = 0; buswidth = 1;
+    busy_until = dat_busy_until = 0; tc_counter = 0; blocks_left = 0;
     uint8_t *buf = malloc(128 * 512), *chk = malloc(128 * 512);
     for (int i = 0; i < CARD_BLOCKS * 512; i++) disk[i] = (uint8_t)(i * 7 + (i >> 9));
     printf("--- %s\n", name);
@@ -213,7 +223,7 @@ static int run(const char *name)
         if (opt_busy_us > 500 && pend == 0) { printf("FAIL async write never deferred\n"); return 1; }
         if (async_xfer(&h, TRUE, 2000, 128, buf, NULL) != SD_OK || memcmp(buf, chk, 128 * 512)) { printf("FAIL async read\n"); return 1; }
         if (async_xfer(&h, FALSE, 3000, 1, chk, NULL) != SD_OK || memcmp(chk, disk + 3000 * 512, 512)) { printf("FAIL async single\n"); return 1; }
-        if (opt_busy_us > 500) {                       /* abort a deferred write, then the card must still work */
+        if (opt_busy_us > 500 && !opt_drop_tc) {       /* abort a deferred write, then the card must still work */
             if (SdXferBegin(&h, FALSE, 4000, 8, chk) != SD_OK) { printf("FAIL abort begin\n"); return 1; }
             while (SdXferPoll(&h, 500) != SD_PENDING) ;
             SdXferAbort(&h);
@@ -235,7 +245,9 @@ int main(void)
     opt_sdhc = 1; opt_no_cmd6 = 1; f |= run("card without CMD6");
     opt_no_cmd6 = 0; opt_crc_every = 37; f |= run("data CRC error every 37 blocks (retry/fallback)");
     opt_crc_every = 0; opt_busy_us = 20000; f |= run("card busy 20 ms after writes (deferred completion)");
-    opt_busy_us = 0;
+    opt_drop_tc = 2; f |= run("busy 20 ms, transfer complete lost on every 2nd write (finished by the data lines)");
+    opt_busy_us = 0; f |= run("no busy, transfer complete lost on every 2nd write");
+    opt_drop_tc = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;
 }

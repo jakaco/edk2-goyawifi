@@ -6,6 +6,7 @@ on:
       - 'WinRT/drivers/**'
       - 'WinRT/HalExtMmpTimer/**'
       - 'WinRT/goyaosk/**'
+      - 'WinRT/goyacmp/**'
       - 'tools/sign-goya-drivers.ps1'
       - '.github/workflows/goya-drivers.yml'
   workflow_dispatch:
@@ -71,10 +72,15 @@ jobs:
         run: |
           bash WinRT/goyaosk/build.sh
           llvm-objdump -d --triple=thumbv7-windows WinRT/goyaosk/out/goyaosk.exe | grep -qE '\b(sdiv|udiv)\b' && { echo 'hardware divide in a Cortex-A9 binary'; exit 1; } || true
+      - name: Build goyacmp.exe (WinPE byte compare, ARM32 Thumb-2, no CRT)
+        run: |
+          bash WinRT/goyacmp/build.sh
+          llvm-objdump -d --triple=thumbv7-windows WinRT/goyacmp/out/goyacmp.exe | grep -qE '\b(sdiv|udiv)\b' && { echo 'hardware divide in a Cortex-A9 binary'; exit 1; } || true
+          mkdir -p tools-out && cp WinRT/goyaosk/out/goyaosk.exe WinRT/goyacmp/out/goyacmp.exe tools-out/   # one flat folder for the signer
       - uses: actions/upload-artifact@v4
         with:
           name: goyaosk-arm
-          path: WinRT/goyaosk/out/goyaosk.exe
+          path: tools-out/*.exe
           if-no-files-found: error
 
   sign:

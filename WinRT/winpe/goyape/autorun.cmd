@@ -64,9 +64,9 @@ echo WinPE autorun > "%~d0\goya\reboot-recovery"
 wpeutil reboot
 goto :eof
 
-rem ---- :compare NAME - byte compare of boot.wim and its NTFS copy with goyacmp.vbs (WinPE has no fc.exe) ----
+rem ---- :compare NAME - byte compare of boot.wim and its NTFS copy with goyacmp.exe (WinPE has no fc.exe or script engine) ----
 :compare
 echo compare %1 start %TIME% >> "%OUT%"
-cscript //nologo "%~dp0goyacmp.vbs" "%~d0\sources\boot.wim" %WIN%\goya\bench.tmp >> "%OUT%" 2>&1
+"%~dp0goyacmp.exe" "%~d0\sources\boot.wim" %WIN%\goya\bench.tmp >> "%OUT%" 2>&1
 echo compare %1 end   %TIME%  exit code %ERRORLEVEL% >> "%OUT%"
 goto :eof

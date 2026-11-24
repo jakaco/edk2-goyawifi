@@ -214,11 +214,14 @@ static LONG TrFilter(PVOID Info, ULONG Site)
    The timer path stays behind USE_TIMER for a later build that gets a working timer.
    Third run: 86 of 819 requests still passed 600 ms (all data sent, auto-CMD12 done, card still busy:
    INTSTS 0x11) and were sent again; every repeat worked, no card errors. That card's busy phase runs
-   past the spec limit while it reorganises flash, so the wait is 3 s now (Linux allows seconds too). */
+   past the spec limit while it reorganises flash, so the wait is 3 s now (Linux allows seconds too).
+   Fourth run: with 3 s it got worse (161 stalls, each one now 3 s): the card is not busy, transfer
+   complete just never comes. sdcore now also finishes a write when the data lines are idle, and
+   the wait is back to 600 ms; the retry log shows PRESENT and the remaining block count. */
 #define USE_TIMER            0
 #define USE_TICK_1MS         0          /* ExSetTimerResolution(1 ms): off until the timer path works */
 #define MAX_XFER_BLOCKS      1024       /* 512 KiB per request */
-#define IDLE_US              (USE_TIMER ? 4000 : 3000000)   /* card silent this long: defer / give up */
+#define IDLE_US              (USE_TIMER ? 4000 : 600000)   /* card silent this long: defer / give up */
 #define TIMER_US             1000       /* timer request (it fires at the next clock tick, 1 ms) */
 #define TICK_100NS           10000      /* requested clock tick: 1 ms */
 #define MAX_TIMER_POLLS      1000       /* timer polls without any progress before a transfer is abandoned */
@@ -599,8 +602,9 @@ static BOOLEAN DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
     if (n <= MAX_XFER_BLOCKS && SdXferBegin(&X->Sd, (BOOLEAN)!Write, lba, n, data) == SD_OK) {
         st = SdXferPoll(&X->Sd, IDLE_US);
         if (st == SD_OK) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return FALSE; }
-        SD_LOG("goyasdhc: fast %s lba %u x%u: status %d after %u blocks, INTSTS %08x, speed %u; retrying\n",
-               Write ? "write" : "read", (ULONG)lba, n, st, X->Sd.XDone, X->Sd.LastIntSts, X->Sd.SpeedLevel);
+        SD_LOG("goyasdhc: fast %s lba %u x%u: status %d after %u blocks, INTSTS %08x PRESENT %08x BLKCNT %u, speed %u; retrying\n",
+               Write ? "write" : "read", (ULONG)lba, n, st, X->Sd.XDone, SD_RD32(&X->Sd, SDHC_INTSTS),
+               SD_RD32(&X->Sd, SDHC_PRESENT), SD_RD16(&X->Sd, SDHC_BLKCOUNT), X->Sd.SpeedLevel);
         if (st == SD_PENDING) {
             if (!USE_TIMER) { SdXferAbort(&X->Sd); X->Deferred++; TrValue(2, 0xA0000000UL | (X->Deferred & 0x0FFFFFFF)); }
             else {
@@ -732,8 +736,8 @@ static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_SHUTDOWN:
-        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, card errors %u, speed level %u, %u kHz\n",
-               X->Ios, X->Fails, X->Deferred, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
+        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u finished by data lines, card errors %u, speed level %u, %u kHz\n",
+               X->Ios, X->Fails, X->Deferred, X->Sd.TcMissing, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_FLUSH:
