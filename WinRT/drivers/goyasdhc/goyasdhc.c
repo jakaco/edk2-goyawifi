@@ -211,11 +211,14 @@ static LONG TrFilter(PVOID Info, ULONG Site)
    each one sat until Storport's request timeout and a LUN reset (~125 resets while writing 165 MB:
    0.23 MB/s, then a hang). So the driver now waits for the card in place: IDLE_US covers the SD
    write-busy limit (250 ms SDHC, 500 ms SDXC); a busy phase is normally 1-3 ms per 512 KiB written.
-   The timer path stays behind USE_TIMER for a later build that gets a working timer. */
+   The timer path stays behind USE_TIMER for a later build that gets a working timer.
+   Third run: 86 of 819 requests still passed 600 ms (all data sent, auto-CMD12 done, card still busy:
+   INTSTS 0x11) and were sent again; every repeat worked, no card errors. That card's busy phase runs
+   past the spec limit while it reorganises flash, so the wait is 3 s now (Linux allows seconds too). */
 #define USE_TIMER            0
 #define USE_TICK_1MS         0          /* ExSetTimerResolution(1 ms): off until the timer path works */
 #define MAX_XFER_BLOCKS      1024       /* 512 KiB per request */
-#define IDLE_US              (USE_TIMER ? 4000 : 600000)   /* card silent this long: defer / give up */
+#define IDLE_US              (USE_TIMER ? 4000 : 3000000)   /* card silent this long: defer / give up */
 #define TIMER_US             1000       /* timer request (it fires at the next clock tick, 1 ms) */
 #define TICK_100NS           10000      /* requested clock tick: 1 ms */
 #define MAX_TIMER_POLLS      1000       /* timer polls without any progress before a transfer is abandoned */
