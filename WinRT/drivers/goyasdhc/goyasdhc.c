@@ -202,12 +202,17 @@ static LONG TrFilter(PVOID Info, ULONG Site)
 
 /* Speed: a request the card stalls on is finished from Storport's timer, which fires at the next clock
    tick. With the default 10-15 ms tick almost every write paid one tick (the card stays busy 1-3 ms
-   while it programs the data), so small writes ran at ~0.3 MB/s. Now: the system clock tick is set to
-   1 ms (ExSetTimerResolution in DriverEntry; the MMP timer HAL extension supports any period), the
-   driver spins up to IDLE_US before deferring, and requests are up to 512 KiB, so far fewer of them
-   wait for the card at all. */
+   while it programs the data), so small writes ran at ~0.3 MB/s. Requests are now up to 512 KiB, so far
+   fewer of them wait for the card at all (see USE_TIMER below for how the wait itself is done). */
+/* Hardware result (WinPE, build 8520): requests handed to RequestTimerCall were never called back;
+   each one sat until Storport's request timeout and a LUN reset (~125 resets while writing 165 MB:
+   0.23 MB/s, then a hang). So the driver now waits for the card in place: IDLE_US covers the SD
+   write-busy limit (250 ms SDHC, 500 ms SDXC); a busy phase is normally 1-3 ms per 512 KiB written.
+   The timer path stays behind USE_TIMER for a later build that gets a working timer. */
+#define USE_TIMER            0
+#define USE_TICK_1MS         0          /* ExSetTimerResolution(1 ms): off until the timer path works */
 #define MAX_XFER_BLOCKS      1024       /* 512 KiB per request */
-#define IDLE_US              4000       /* card silent this long: finish the request from the timer */
+#define IDLE_US              (USE_TIMER ? 4000 : 600000)   /* card silent this long: defer / give up */
 #define TIMER_US             1000       /* timer request (it fires at the next clock tick, 1 ms) */
 #define TICK_100NS           10000      /* requested clock tick: 1 ms */
 #define MAX_TIMER_POLLS      1000       /* timer polls without any progress before a transfer is abandoned */
@@ -586,11 +591,14 @@ static BOOLEAN DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
         st = SdXferPoll(&X->Sd, IDLE_US);
         if (st == SD_OK) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return FALSE; }
         if (st == SD_PENDING) {
-            X->Cur = Srb; X->CurWrite = Write; X->CurLba = lba; X->CurN = n; X->CurData = data; X->CurPolls = 0;
-            StorPortNotification(RequestTimerCall, X, GoyaTimer, TIMER_US);
-            return TRUE;
+            if (!USE_TIMER) { SdXferAbort(&X->Sd); X->Deferred++; TrValue(2, 0xA0000000UL | (X->Deferred & 0x0FFFFFFF)); }
+            else {
+                X->Cur = Srb; X->CurWrite = Write; X->CurLba = lba; X->CurN = n; X->CurData = data; X->CurPolls = 0;
+                StorPortNotification(RequestTimerCall, X, GoyaTimer, TIMER_US);
+                return TRUE;
+            }
         }
-        /* error: fall through, the synchronous path retries */
+        /* error or card silent for IDLE_US: the synchronous path retries */
     }
     SyncRw(X, Srb, Write, lba, n, data);
     return FALSE;
@@ -888,6 +896,6 @@ ULONG DriverEntry(PVOID DriverObject, PVOID RegistryPath)
     TrValue(3, best);
     /* 1 ms clock tick for the timer completions (normal load only: in crash-dump mode Storport calls
        DriverEntry with no driver object, at a raised IRQL) */
-    if (DriverObject != NULL && best == 0) ExSetTimerResolution(TICK_100NS, TRUE);
+    if (USE_TICK_1MS && DriverObject != NULL && best == 0) ExSetTimerResolution(TICK_100NS, TRUE);
     return best;
 }
