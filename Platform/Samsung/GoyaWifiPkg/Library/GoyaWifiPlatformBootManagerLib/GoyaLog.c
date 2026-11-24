@@ -123,14 +123,14 @@ SaveLog (
   EFI_STATUS         Status;
 
   State  = Hdr->State;
-  Status = OpenDir (Root, L"\goya", &GoyaDir);
+  Status = OpenDir (Root, L"\\goya", &GoyaDir);
   if (!EFI_ERROR (Status)) {
     Status = OpenDir (GoyaDir, L"logs", &LogDir);
     GoyaDir->Close (GoyaDir);
   }
 
   if (EFI_ERROR (Status)) {
-    Print (L"goyalog: cannot create \goya\logs: %r\n", Status);
+    Print (L"goyalog: cannot create \\goya\\logs: %r\n", Status);
     return Status;
   }
 
@@ -202,7 +202,7 @@ SaveLog (
   Status = WriteAll (File, (UINT8 *)Hdr + GOYALOG_TEXT_OFF, Hdr->Used);
   File->Flush (File);
   File->Close (File);
-  Print (L"goyalog: wrote \goya\logs\%s (%r)\n", Name, Status);
+  Print (L"goyalog: wrote \\goya\\logs\\%s (%r)\n", Name, Status);
   return Status;
 }
 
@@ -251,7 +251,7 @@ GoyaLogSave (
     WriteBackDataCacheRange (Hdr, sizeof (*Hdr));
   }
 
-  if (!EFI_ERROR (Root->Open (Root, &Flag, L"\goya\reboot-recovery", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))) {
+  if (!EFI_ERROR (Root->Open (Root, &Flag, L"\\goya\\reboot-recovery", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))) {
     Flag->Delete (Flag);
     Print (L"goyalog: Windows asked for a restart into recovery\n");
     Recovery = TRUE;
