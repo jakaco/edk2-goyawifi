@@ -252,8 +252,10 @@ static int run(const char *name)
         printf("async ok (write deferred %u times)\n", pend);
     }
     if (opt_drop_tc && h.TcSettled == 0) { printf("FAIL lost TC never settled by CMD13\n"); return 1; }
-    if ((opt_stuck || opt_rcv) && h.TcSettled != 0) { printf("FAIL unfinished write counted as done\n"); return 1; }
-    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled);
+    if (opt_stuck && h.TcSettled != 0) { printf("FAIL unfinished write counted as done\n"); return 1; }
+    if (opt_rcv && h.StopSent == 0) { printf("FAIL missing auto CMD12 never sent by the driver\n"); return 1; }
+    if (!opt_rcv && h.StopSent != 0) { printf("FAIL CMD12 sent without a receiving card\n"); return 1; }
+    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u, own CMD12 %u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled, h.StopSent);
     return 0;
 }
 
@@ -270,7 +272,7 @@ int main(void)
     opt_drop_tc = 2; f |= run("busy 20 ms, transfer complete lost every 2nd write (CMD13 check)");
     opt_busy_us = 0; f |= run("transfer complete lost every 2nd write, card not busy");
     opt_drop_tc = 0; opt_stuck = 2; f |= run("controller wants one more block every 2nd multi-block write (abort, retry)");
-    opt_stuck = 0; opt_rcv = 2; f |= run("card still receiving every 2nd multi-block write (CMD13 says no)");
+    opt_stuck = 0; opt_rcv = 2; f |= run("auto CMD12 missing every 2nd multi-block write (driver sends it)");
     opt_rcv = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;

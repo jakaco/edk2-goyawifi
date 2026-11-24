@@ -85,6 +85,7 @@
 #define R1_STATE(r)       (((r) >> 9) & 0xF)
 #define R1_STATE_TRAN     4
 #define R1_READY          0x00000100UL
+#define R1_STATE_RCV      6
 #define R1_STATE_PRG      7
 #define TC_CHECK_US       2000            /* SdWriteSettled: first check, then every 2 ms */
 
@@ -114,6 +115,7 @@ typedef struct _SD_HOST {
     UCHAR     XCheck;             /* SdWriteSettled: 0 not started, 1 checking, 2 card said no */
     ULONG     XNextCheck;         /* idle time (us) of the next check within one SdXferPoll call */
     ULONG     TcSettled;          /* writes found over by CMD13 although transfer complete never came */
+    ULONG     StopSent;           /* of those, writes where the auto CMD12 was missing and the driver sent it */
 } SD_HOST;
 
 typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM, SD_PENDING } SD_STATUS;
@@ -524,6 +526,22 @@ static int SdWriteSettled(SD_HOST *c)
                p, st, r, R1_STATE(r));
     if (st != SD_OK) return 2;
     if (R1_STATE(r) == R1_STATE_PRG) return 0;            /* still programming */
+    /* Run 8: in every stall the card was still receiving (state 6) - all blocks sent, but the
+       controller never sent the automatic CMD12, so the card waits for more data and no transfer
+       complete comes. Send the stop ourselves; the write counts as done only if the card then
+       reports the transfer state, ready, with no error bits (CMD12's answer and a fresh CMD13). */
+    if (R1_STATE(r) == R1_STATE_RCV && c->XCount > 1) {
+        ULONG r12 = 0;
+        st = SdCmd(c, 12, 0, R_R1B | CMD_ABORT, 0, &r12);
+        if (st == SD_OK) st = SdCmd(c, 13, c->Rca << 16, R_R1, 0, &r);
+        if (c->StopSent < 10 || st != SD_OK || R1_STATE(r) != R1_STATE_TRAN || (r12 & R1_ERRORS))
+            SD_LOG("goyasdhc: sent the missing CMD12: status %d, CMD12 answer %08x, card status %08x (state %u)\n",
+                   st, r12, r, R1_STATE(r));
+        if (st != SD_OK || (r12 & R1_ERRORS)) return 2;
+        if (R1_STATE(r) != R1_STATE_TRAN || !(r & R1_READY) || (r & R1_ERRORS)) return 2;
+        c->StopSent++;
+        return 1;
+    }
     if (R1_STATE(r) != R1_STATE_TRAN || !(r & R1_READY) || (r & R1_ERRORS)) return 2;
     return 1;
 }
