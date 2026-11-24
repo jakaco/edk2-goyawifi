@@ -157,6 +157,13 @@
 #define   PM800_SW_PDOWN            BIT5
 #define PM822_GENERAL_USE_REG       0xEF
 #define   PM822_SHUTDOWN_BY_POWEROFF 0xA0
+//
+// Reboot reason for S-Boot in the low 5 bits of PM822_GENERAL_USE_REG (the vendor
+// kernel's reboot_notifier_func keeps bits 7:5): "recovery" 6, "recovery_done" 5,
+// "arm11_fota" 4, "alarm" 9, "download" 0x1E. Read from TWRP's kernel on the SM-T110.
+//
+#define   PM822_REBOOT_REASON_MASK  0x1F
+#define   PM822_REBOOT_RECOVERY     0x06
 
 //
 // Secondary core (CPU1) release, as in the vendor kernels

@@ -122,13 +122,26 @@ ResetPlatformSpecific (
   IN VOID   *ResetData
   )
 {
+  UINT8  Val;
+
   //
   // ResetData starts with a NUL terminated CHAR16 string; "recovery" makes
-  // S-Boot boot the RECOVERY partition after the reset.
+  // S-Boot boot the RECOVERY partition after the reset. S-Boot takes the reboot
+  // reason from the PMIC (as the vendor kernel leaves it, see Pxa988.h); the RTC
+  // backup register alone was tried on hardware and S-Boot ignored it.
   //
   if ((ResetData != NULL) && (DataSize >= sizeof (L"recovery")) &&
       (StrnCmp ((CHAR16 *)ResetData, L"recovery", 8) == 0))
   {
+    if (EFI_ERROR (Pm822Read (PM822_I2C_ADDR, PM822_GENERAL_USE_REG, &Val))) {
+      Val = 0;
+    }
+
+    Pm822Write (
+      PM822_I2C_ADDR,
+      PM822_GENERAL_USE_REG,
+      (UINT8)((Val & ~PM822_REBOOT_REASON_MASK) | PM822_REBOOT_RECOVERY)
+      );
     MmioWrite32 (mRtcBase + (PXA988_RTC_BR0 - RTC_BASE), RTC_BR0_RECOVERY);
   }
 
