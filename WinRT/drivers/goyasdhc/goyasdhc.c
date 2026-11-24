@@ -62,7 +62,10 @@
 #define SD_WR16(c, o, v)  StorPortWriteRegisterUshort((c)->Os, (PUSHORT)((c)->Regs + (o)), (USHORT)(v))
 #define SD_WR32(c, o, v)  StorPortWriteRegisterUlong((c)->Os, (PULONG)((c)->Regs + (o)), (ULONG)(v))
 #define SD_STALL(us)      StorPortStallExecution(us)
-#define SD_LOG(...)       StorPortDebugPrint(0, __VA_ARGS__)
+/* Plain DbgPrint (DPFLTR_DEFAULT_ID): goyabug captures it into the goyalog boot log on the card.
+   StorPortDebugPrint output never arrived there (build 8520 storport drops it). */
+__declspec(dllimport) ULONG __cdecl DbgPrint(const char *Format, ...);
+#define SD_LOG(...)       DbgPrint(__VA_ARGS__)
 #define SD_DATA_PORT(c)   ((volatile ULONG *)((c)->Regs + SDHC_BUFFER))   /* direct access, no call per word */
 
 #include "sdcore.c"
@@ -554,6 +557,9 @@ static VOID SyncRw(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write, ULONGLON
         }
         lba += chunk; n -= chunk;
     }
+    if (X->Sd.ErrorCount || X->Sd.SpeedLevel)
+        SD_LOG("goyasdhc: %s ok (slow path), errors so far %u, speed level %u, %u kHz\n",
+               Write ? "write" : "read", X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
     Srb->SrbStatus = SRB_STATUS_SUCCESS;
 }
 
@@ -590,6 +596,8 @@ static BOOLEAN DoReadWrite(PGOYA_EXT X, PSCSI_REQUEST_BLOCK Srb, BOOLEAN Write)
     if (n <= MAX_XFER_BLOCKS && SdXferBegin(&X->Sd, (BOOLEAN)!Write, lba, n, data) == SD_OK) {
         st = SdXferPoll(&X->Sd, IDLE_US);
         if (st == SD_OK) { Srb->SrbStatus = SRB_STATUS_SUCCESS; return FALSE; }
+        SD_LOG("goyasdhc: fast %s lba %u x%u: status %d after %u blocks, INTSTS %08x, speed %u; retrying\n",
+               Write ? "write" : "read", (ULONG)lba, n, st, X->Sd.XDone, X->Sd.LastIntSts, X->Sd.SpeedLevel);
         if (st == SD_PENDING) {
             if (!USE_TIMER) { SdXferAbort(&X->Sd); X->Deferred++; TrValue(2, 0xA0000000UL | (X->Deferred & 0x0FFFFFFF)); }
             else {
@@ -720,8 +728,12 @@ static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         GoyaInitCard(X);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
-    case SRB_FUNCTION_FLUSH:
     case SRB_FUNCTION_SHUTDOWN:
+        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, card errors %u, speed level %u, %u kHz\n",
+               X->Ios, X->Fails, X->Deferred, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
+        Srb->SrbStatus = SRB_STATUS_SUCCESS;
+        break;
+    case SRB_FUNCTION_FLUSH:
     case SRB_FUNCTION_PNP:
     case SRB_FUNCTION_POWER:
     case SRB_FUNCTION_ABORT_COMMAND:
