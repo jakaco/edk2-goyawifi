@@ -200,10 +200,19 @@ static LONG TrFilter(PVOID Info, ULONG Site)
 #define KEY_HW_ERROR         0x04
 #define KEY_ILLEGAL_REQUEST  0x05
 
-#define MAX_XFER_BLOCKS      128        /* 64 KiB per request */
-#define IDLE_US              500        /* card silent this long: finish the request from the timer */
-#define TIMER_US             1000       /* timer request (it fires at the next clock tick, ~10-15 ms) */
-#define MAX_TIMER_POLLS      1000       /* >= 1 s (timer at least 1 ms) before a transfer is abandoned */
+/* Speed: a request the card stalls on is finished from Storport's timer, which fires at the next clock
+   tick. With the default 10-15 ms tick almost every write paid one tick (the card stays busy 1-3 ms
+   while it programs the data), so small writes ran at ~0.3 MB/s. Now: the system clock tick is set to
+   1 ms (ExSetTimerResolution in DriverEntry; the MMP timer HAL extension supports any period), the
+   driver spins up to IDLE_US before deferring, and requests are up to 512 KiB, so far fewer of them
+   wait for the card at all. */
+#define MAX_XFER_BLOCKS      1024       /* 512 KiB per request */
+#define IDLE_US              4000       /* card silent this long: finish the request from the timer */
+#define TIMER_US             1000       /* timer request (it fires at the next clock tick, 1 ms) */
+#define TICK_100NS           10000      /* requested clock tick: 1 ms */
+#define MAX_TIMER_POLLS      1000       /* timer polls without any progress before a transfer is abandoned */
+
+__declspec(dllimport) ULONG ExSetTimerResolution(ULONG DesiredTime, BOOLEAN SetResolution);
 #define Q_MAX                128
 
 static volatile UCHAR *gShared[3];     /* SDH1, SDH2, SDH3 register bases that are safe to read */
@@ -759,7 +768,11 @@ static VOID GoyaTimer_(PGOYA_EXT X)
     SD_STATUS st;
 
     if (Srb == NULL) { RunQueue(X); return; }
-    st = SdXferPoll(&X->Sd, IDLE_US);
+    {
+        ULONG done = X->Sd.XDone;
+        st = SdXferPoll(&X->Sd, IDLE_US);
+        if (X->Sd.XDone != done) X->CurPolls = 0;           /* only stalls without progress count */
+    }
     if (st == SD_PENDING) {
         if (++X->CurPolls < MAX_TIMER_POLLS) {
             StorPortNotification(RequestTimerCall, X, GoyaTimer, TIMER_US);
@@ -873,5 +886,8 @@ ULONG DriverEntry(PVOID DriverObject, PVOID RegistryPath)
         if (st == 0 || best != 0) best = st;
     }
     TrValue(3, best);
+    /* 1 ms clock tick for the timer completions (normal load only: in crash-dump mode Storport calls
+       DriverEntry with no driver object, at a raised IRQL) */
+    if (DriverObject != NULL && best == 0) ExSetTimerResolution(TICK_100NS, TRUE);
     return best;
 }

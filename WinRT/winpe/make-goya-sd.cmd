@@ -29,6 +29,10 @@ rem  found in ..\drivers\ (kit layout) or next to this script (goyagpio, goyai2c
 rem  goyatouch, goyakeys, goyapinmux, goyasdhc) with
 rem  DISM /ForceUnsigned, set the BCD (testsigning, nointegritychecks, onecpu),
 rem  and copy everything to the card together with \goyape\autorun.cmd.
+rem
+rem  GOYA_PE_ENTRY=1: E: is instead the SYSTEM partition of a full Windows RT card
+rem  (..\install\install-winrt-sd.cmd); WinPE is added to its boot menu as a RAM-disk
+rem  entry and nothing else on the card changes (see :addentry).
 rem ===========================================================================
 set SD=%~1
 set MEDIA=%~f2
@@ -160,6 +164,8 @@ echo   goyaosk.exe installed as the WinPE shell ^(winpeshl.ini^)
 :noosk
 dism /Unmount-Image /MountDir:"%MNT%" /Commit || goto fail
 
+if "%GOYA_PE_ENTRY%"=="1" goto addentry
+
 echo === 3/4 BCD
 call "%HERE%bcd.cmd" goya "%WORK%" || exit /b 1
 
@@ -171,6 +177,49 @@ if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL 
 echo.
 echo Done. Card in the tablet, then boot the EDK2 firmware: goyawifi-uefi-winrt-release.img
 echo The EDK2 image to use is the "winrt" one (RTC set to 2012-08-01).
+exit /b 0
+
+rem ---- GOYA_PE_ENTRY=1: WinPE as an extra boot entry on a Windows RT card ------------------------------
+rem %SD% is the card's FAT32 SYSTEM partition made by ..\install\install-winrt-sd.cmd. Its boot manager
+rem and BCD stay; only boot\boot.sdi, sources\boot.wim and \goyape are copied, and a RAM-disk WinPE
+rem entry is added to the BCD as the default (the full install stays in the menu: Vol Up/Down + Home).
+:addentry
+set B=%SD%\EFI\Microsoft\Boot\BCD
+if not exist "%B%" (echo %SD% has no \EFI\Microsoft\Boot\BCD - not a Windows RT card system partition. & exit /b 1)
+echo === 3/4 copying WinPE to %SD%\ (boot.sdi, boot.wim, goyape)
+if not exist %SD%\boot mkdir %SD%\boot
+if not exist %SD%\sources mkdir %SD%\sources
+copy /y "%WORK%\boot\boot.sdi" %SD%\boot\boot.sdi >nul || (echo copy of boot.sdi failed & exit /b 1)
+copy /y "%WORK%\sources\boot.wim" %SD%\sources\boot.wim >nul || (echo copy of boot.wim failed - is the partition big enough? & exit /b 1)
+if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL /NDL /NJH /NP >nul
+echo === 4/4 BCD: RAM-disk WinPE entry
+bcdedit /store "%B%" /enum {ramdiskoptions} >nul 2>&1 || (bcdedit /store "%B%" /create {ramdiskoptions} /d "Goya WinPE ramdisk" >nul || exit /b 1)
+bcdedit /store "%B%" /set {ramdiskoptions} ramdisksdidevice partition=%SD% >nul || exit /b 1
+bcdedit /store "%B%" /set {ramdiskoptions} ramdisksdipath \boot\boot.sdi >nul || exit /b 1
+rem an entry from an earlier run is replaced
+for /f "tokens=2 delims={}" %%G in ('bcdedit /store "%B%" /enum osloader /v ^| findstr /i /c:"identifier"') do (
+  bcdedit /store "%B%" /enum {%%G} | findstr /i /c:"WinPE (RAM)" >nul && bcdedit /store "%B%" /delete {%%G} /cleanup >nul
+)
+set PEG=
+for /f "tokens=2 delims={}" %%G in ('bcdedit /store "%B%" /create /d "WinPE (RAM)" /application osloader') do set PEG={%%G}
+if not defined PEG (echo could not create the WinPE entry & exit /b 1)
+bcdedit /store "%B%" /set %PEG% device ramdisk=[%SD%]\sources\boot.wim,{ramdiskoptions} >nul || exit /b 1
+bcdedit /store "%B%" /set %PEG% osdevice ramdisk=[%SD%]\sources\boot.wim,{ramdiskoptions} >nul || exit /b 1
+bcdedit /store "%B%" /set %PEG% path \windows\system32\winload.efi >nul || exit /b 1
+bcdedit /store "%B%" /set %PEG% systemroot \windows >nul || exit /b 1
+bcdedit /store "%B%" /set %PEG% winpe yes >nul
+bcdedit /store "%B%" /set %PEG% detecthal yes >nul
+bcdedit /store "%B%" /set %PEG% locale en-US >nul
+bcdedit /store "%B%" /set %PEG% testsigning on >nul || exit /b 1
+bcdedit /store "%B%" /set %PEG% nointegritychecks on >nul || exit /b 1
+bcdedit /store "%B%" /set %PEG% onecpu on >nul
+bcdedit /store "%B%" /displayorder %PEG% /addfirst >nul
+bcdedit /store "%B%" /default %PEG% >nul
+bcdedit /store "%B%" /timeout 5 >nul
+bcdedit /store "%B%" /enum %PEG%
+echo.
+echo Done. WinPE is the default boot entry on the card (5 s menu; the full install is the second entry).
+echo Back to the full install as default:  bcdedit /store %B% /default ^<its identifier^>
 exit /b 0
 
 :optdrv

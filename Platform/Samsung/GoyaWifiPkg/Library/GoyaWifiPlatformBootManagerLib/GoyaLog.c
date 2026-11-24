@@ -104,14 +104,14 @@ WriteAll (
   return (Size == 0) ? EFI_SUCCESS : File->Write (File, &Len, (VOID *)Data);
 }
 
-VOID
-GoyaLogSave (
-  VOID
+/** Write the log to \goya\logs\boot-NNNN-<state>.txt on Root. */
+STATIC
+EFI_STATUS
+SaveLog (
+  IN EFI_FILE_PROTOCOL  *Root,
+  IN GOYALOG_HDR        *Hdr
   )
 {
-  GOYALOG_HDR        *Hdr;
-  UINT32             State;
-  EFI_FILE_PROTOCOL  *Root;
   EFI_FILE_PROTOCOL  *GoyaDir;
   EFI_FILE_PROTOCOL  *LogDir;
   EFI_FILE_PROTOCOL  *File;
@@ -119,38 +119,19 @@ GoyaLogSave (
   CHAR8              *Sum;
   UINTN              Len;
   UINTN              Index;
+  UINT32             State;
   EFI_STATUS         Status;
 
-  Hdr = (GOYALOG_HDR *)(UINTN)GOYALOG_PHYS;
-  InvalidateDataCacheRange (Hdr, GOYALOG_SIZE);
-
-  if ((Hdr->Magic0 != GOYALOG_MAGIC0) || (Hdr->Magic1 != GOYALOG_MAGIC1) ||
-      (Hdr->State == GOYALOG_SAVED) || (Hdr->State > GOYALOG_SHUTDOWN) ||
-      (Hdr->Used > GOYALOG_TEXT_MAX) || (Hdr->CrashUsed > GOYALOG_CRASH_MAX))
-  {
-    return;
-  }
-
-  State = Hdr->State;
-  Print (L"goyalog: Windows boot %d ended: %a after %ds - saving the log\n", Hdr->Boot, mStateName[State], Hdr->Uptime);
-
-  EfiBootManagerConnectAll ();
-  Root = OpenWindowsSystemVolume ();
-  if (Root == NULL) {
-    Print (L"goyalog: no Windows system partition found, log not saved\n");
-    return;
-  }
-
-  Status = OpenDir (Root, L"\\goya", &GoyaDir);
+  State  = Hdr->State;
+  Status = OpenDir (Root, L"\goya", &GoyaDir);
   if (!EFI_ERROR (Status)) {
     Status = OpenDir (GoyaDir, L"logs", &LogDir);
     GoyaDir->Close (GoyaDir);
   }
 
   if (EFI_ERROR (Status)) {
-    Print (L"goyalog: cannot create \\goya\\logs: %r\n", Status);
-    Root->Close (Root);
-    return;
+    Print (L"goyalog: cannot create \goya\logs: %r\n", Status);
+    return Status;
   }
 
   UnicodeSPrint (Name, sizeof (Name), L"boot-%04d-%a.txt", Hdr->Boot, mStateName[State]);
@@ -168,8 +149,7 @@ GoyaLogSave (
   LogDir->Close (LogDir);
   if (EFI_ERROR (Status)) {
     Print (L"goyalog: cannot create %s: %r\n", Name, Status);
-    Root->Close (Root);
-    return;
+    return Status;
   }
 
   Sum = AllocateZeroPool (SUMMARY_SIZE);
@@ -222,13 +202,64 @@ GoyaLogSave (
   Status = WriteAll (File, (UINT8 *)Hdr + GOYALOG_TEXT_OFF, Hdr->Used);
   File->Flush (File);
   File->Close (File);
+  Print (L"goyalog: wrote \goya\logs\%s (%r)\n", Name, Status);
+  return Status;
+}
+
+/**
+  Runs every boot (BDS, after the console is up), when the Windows card is present:
+  - saves an unsaved goyabug log (see the file header),
+  - restarts into recovery if Windows did not shut down cleanly, or if Windows asked
+    for it with the flag file \goya\reboot-recovery on the system partition
+    (WinPE's autorun.cmd creates it), which is deleted first.
+**/
+VOID
+GoyaLogSave (
+  VOID
+  )
+{
+  GOYALOG_HDR        *Hdr;
+  BOOLEAN            HaveLog;
+  BOOLEAN            Recovery;
+  EFI_FILE_PROTOCOL  *Root;
+  EFI_FILE_PROTOCOL  *Flag;
+
+  Hdr = (GOYALOG_HDR *)(UINTN)GOYALOG_PHYS;
+  InvalidateDataCacheRange (Hdr, GOYALOG_SIZE);
+  HaveLog = (Hdr->Magic0 == GOYALOG_MAGIC0) && (Hdr->Magic1 == GOYALOG_MAGIC1) &&
+            (Hdr->State != GOYALOG_SAVED) && (Hdr->State <= GOYALOG_SHUTDOWN) &&
+            (Hdr->Used <= GOYALOG_TEXT_MAX) && (Hdr->CrashUsed <= GOYALOG_CRASH_MAX);
+  Recovery = FALSE;
+
+  if (HaveLog) {
+    Print (L"goyalog: Windows boot %d ended: %a after %ds - saving the log\n", Hdr->Boot, mStateName[Hdr->State], Hdr->Uptime);
+  }
+
+  EfiBootManagerConnectAll ();
+  Root = OpenWindowsSystemVolume ();
+  if (Root == NULL) {
+    if (HaveLog) {
+      Print (L"goyalog: no Windows system partition found, log not saved\n");
+    }
+
+    return;
+  }
+
+  if (HaveLog && !EFI_ERROR (SaveLog (Root, Hdr))) {
+    Recovery    = (Hdr->State != GOYALOG_SHUTDOWN);
+    Hdr->State = GOYALOG_SAVED;
+    WriteBackDataCacheRange (Hdr, sizeof (*Hdr));
+  }
+
+  if (!EFI_ERROR (Root->Open (Root, &Flag, L"\goya\reboot-recovery", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))) {
+    Flag->Delete (Flag);
+    Print (L"goyalog: Windows asked for a restart into recovery\n");
+    Recovery = TRUE;
+  }
+
   Root->Close (Root);
-  Print (L"goyalog: wrote \\goya\\logs\\%s (%r)\n", Name, Status);
 
-  Hdr->State = GOYALOG_SAVED;
-  WriteBackDataCacheRange (Hdr, sizeof (*Hdr));
-
-  if (State != GOYALOG_SHUTDOWN) {
+  if (Recovery) {
     Print (L"goyalog: restarting into recovery\n");
     gBS->Stall (2000000);
     gRT->ResetSystem (EfiResetPlatformSpecific, EFI_SUCCESS, sizeof (L"recovery"), L"recovery");
