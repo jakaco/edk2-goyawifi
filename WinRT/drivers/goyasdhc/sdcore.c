@@ -202,6 +202,11 @@ static SD_STATUS SdCmd(SD_HOST *c, ULONG idx, ULONG arg, USHORT flags, USHORT xf
     if ((flags & CMD_ABORT) == CMD_ABORT) inhibit = PRES_CMD_INHIBIT;
     for (us = 0; us < 200000 && (SD_RD32(c, SDHC_PRESENT) & inhibit); us += 10) SD_STALL(10);
     if (SD_RD32(c, SDHC_PRESENT) & inhibit) { SdRecover(c); return SD_ETIMEOUT; }
+    /* A data command while the card still holds DAT0 low (busy from the previous write: the
+       controller does not always cover that with DAT_INHIBIT) gets no data until it is done;
+       seen twice in run 5 as a read with no block in 600 ms. Wait for DAT0 first. */
+    if (flags & CMD_DATA)
+        for (us = 0; us < 1000000 && !(SD_RD32(c, SDHC_PRESENT) & PRES_DAT0); us += 10) SD_STALL(10);
 
     SD_WR32(c, SDHC_INTSTS, 0xFFFFFFFF);
     SD_WR32(c, SDHC_ARG, arg);
@@ -348,15 +353,34 @@ static BOOLEAN SdSwitchHighSpeed(SD_HOST *c)
     UCHAR st[64];
     ULONG mode;
 
+    ULONG attempt;
+    SD_STATUS e;
+
     if (!(SdCsdBits(c->Csd, 84, 12) & (1 << 10))) return FALSE;   /* no CMD6 (class 10) */
-    for (mode = 0; mode < 2; mode++) {
-        SD_WR16(c, SDHC_BLKSIZE, 0x7000 | 64);
-        SD_WR16(c, SDHC_BLKCOUNT, 1);
-        if (SdCmd(c, 6, (mode ? 0x80000000UL : 0) | 0x00FFFFF1UL, R_R1 | CMD_DATA, XFER_READ, NULL) != SD_OK) return FALSE;
-        if (SdPio(c, TRUE, st, 1, 64) != SD_OK) { SdRecover(c); return FALSE; }
-        if ((st[16] & 0x0F) != 1) return FALSE;
+    /* Run 5 on the tablet came up at 13 MHz without HS (earlier boots: 26 MHz HS), so the switch can
+       fail now and then: retry it, and say why it failed. */
+    for (attempt = 0; attempt < 3; attempt++) {
+        for (mode = 0; mode < 2; mode++) {
+            SD_WR16(c, SDHC_BLKSIZE, 0x7000 | 64);
+            SD_WR16(c, SDHC_BLKCOUNT, 1);
+            if ((e = SdCmd(c, 6, (mode ? 0x80000000UL : 0) | 0x00FFFFF1UL, R_R1 | CMD_DATA, XFER_READ, NULL)) != SD_OK) {
+                SD_LOG("goyasdhc: CMD6 mode %u: command failed (%d, INTSTS %08x), attempt %u\n", mode, e, c->LastIntSts, attempt);
+                break;
+            }
+            if ((e = SdPio(c, TRUE, st, 1, 64)) != SD_OK) {
+                SD_LOG("goyasdhc: CMD6 mode %u: status read failed (%d, INTSTS %08x), attempt %u\n", mode, e, c->LastIntSts, attempt);
+                SdRecover(c);
+                break;
+            }
+            if ((st[16] & 0x0F) != 1) {
+                SD_LOG("goyasdhc: CMD6 mode %u: function group 1 reports %02x, attempt %u\n", mode, st[16], attempt);
+                break;
+            }
+        }
+        if (mode == 2) return TRUE;
+        SdWaitTran(c);
     }
-    return TRUE;
+    return FALSE;
 }
 
 static ULONG SdTargetHz(SD_HOST *c)

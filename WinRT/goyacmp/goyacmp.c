@@ -39,14 +39,16 @@ static WCHAR *NextArg(WCHAR **P)
   return A;
 }
 
-/* reads up to CHUNK bytes (sector multiples, as NO_BUFFERING requires); returns bytes read, ~0 on error */
+/* reads up to CHUNK bytes; returns bytes read, ~0 on error. NO_BUFFERING needs sector-aligned
+   offsets and sizes, so a short read (end of file: the last piece is not a sector multiple) ends it
+   instead of reading on at an unaligned position (that failed with error 87 on the tablet). */
 static DWORD ReadPiece(HANDLE H, BYTE *Buf)
 {
   DWORD Got = 0, N;
   while (Got < CHUNK) {
     if (!ReadFile(H, Buf + Got, CHUNK - Got, &N, NULL)) return ~0u;
-    if (N == 0) break;
     Got += N;
+    if (N == 0 || (N & 511)) break;
   }
   return Got;
 }
