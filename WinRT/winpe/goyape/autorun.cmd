@@ -43,6 +43,8 @@ echo read  FAT32 end   %TIME% >> "%OUT%"
 if not defined WIN (echo no Windows partition found, write test skipped >> "%OUT%" & goto benchdone)
 if not exist %WIN%\goya mkdir %WIN%\goya
 echo write NTFS %WIN% start %TIME% >> "%OUT%"
+rem a fresh file each time: stale bytes of an older copy must not pass for a correct write
+if exist %WIN%\goya\bench.tmp del %WIN%\goya\bench.tmp
 copy /b /y "%~d0\sources\boot.wim" %WIN%\goya\bench.tmp >nul
 echo write NTFS %WIN% end   %TIME% >> "%OUT%"
 echo read  NTFS %WIN% start %TIME% >> "%OUT%"
@@ -50,7 +52,7 @@ copy /b %WIN%\goya\bench.tmp nul >nul
 echo read  NTFS %WIN% end   %TIME% >> "%OUT%"
 call :compare warm
 echo compare again after the restart > "%~dp0verify.flag"
-rem bench.tmp stays on the NTFS partition for a later look (the next run overwrites it)
+rem bench.tmp stays on the NTFS partition for the compare after the restart
 :benchdone
 echo --- end %TIME% >> "%OUT%"
 :nobench

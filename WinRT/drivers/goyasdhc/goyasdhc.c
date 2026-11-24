@@ -216,8 +216,9 @@ static LONG TrFilter(PVOID Info, ULONG Site)
    INTSTS 0x11) and were sent again; every repeat worked, no card errors. That card's busy phase runs
    past the spec limit while it reorganises flash, so the wait is 3 s now (Linux allows seconds too).
    Fourth run: with 3 s it got worse (161 stalls, each one now 3 s): the card is not busy, transfer
-   complete just never comes. sdcore now also finishes a write when the data lines are idle, and
-   the wait is back to 600 ms; the retry log shows PRESENT and the remaining block count. */
+   complete just never comes. The wait is back to 600 ms; the retry log shows PRESENT and the
+   remaining block count. (Runs 5/6 finished such writes when the data lines looked idle: fast, but
+   in run 6 writes were lost - the controller still wanted data - so that shortcut is gone.) */
 #define USE_TIMER            0
 #define USE_TICK_1MS         0          /* ExSetTimerResolution(1 ms): off until the timer path works */
 #define MAX_XFER_BLOCKS      1024       /* 512 KiB per request */
@@ -736,8 +737,8 @@ static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_SHUTDOWN:
-        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u finished by data lines, card errors %u, speed level %u, %u kHz\n",
-               X->Ios, X->Fails, X->Deferred, X->Sd.TcMissing, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
+        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, card errors %u, speed level %u, %u kHz\n",
+               X->Ios, X->Fails, X->Deferred, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_FLUSH:

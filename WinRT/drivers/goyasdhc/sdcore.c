@@ -104,7 +104,6 @@ typedef struct _SD_HOST {
     ULONG     LastIntSts;
     ULONG     FailIntSts;
     ULONG     ErrorCount;
-    ULONG     TcMissing;          /* writes finished by the data lines because transfer complete never came */
     /* asynchronous transfer (SdXferBegin / SdXferPoll) */
     PUCHAR    XBuf;
     ULONG     XCount, XDone;
@@ -309,14 +308,6 @@ static VOID SdFifoOut(SD_HOST *c, const UCHAR *buf, ULONG words)
     }
 }
 
-/* Data transaction over: the controller has dropped DAT_INHIBIT (which covers the card's busy phase)
-   and the card no longer holds DAT0 low. */
-static BOOLEAN SdDataIdle(SD_HOST *c)
-{
-    ULONG p = SD_RD32(c, SDHC_PRESENT);
-    return !(p & PRES_DAT_INHIBIT) && (p & PRES_DAT0);
-}
-
 /* PIO data phase of the command just issued */
 static SD_STATUS SdPio(SD_HOST *c, BOOLEAN read, PUCHAR buf, ULONG blocks, ULONG blksz)
 {
@@ -330,17 +321,7 @@ static SD_STATUS SdPio(SD_HOST *c, BOOLEAN read, PUCHAR buf, ULONG blocks, ULONG
         if (read) SdFifoIn(c, buf, words); else SdFifoOut(c, buf, words);
         buf += words * 4;
     }
-    for (s = 0, b = 0; b < 2000000; b += 10) {      /* writes: includes card programming busy */
-        s = SD_RD32(c, SDHC_INTSTS);
-        if (s & (INT_TC | INT_ERRSUM | INT_ERRMASK)) break;
-        if (SdDataIdle(c)) {                         /* transfer complete missing (see SdXferPoll) */
-            if (++c->TcMissing <= 10)
-                SD_LOG("goyasdhc: transfer complete missing, data lines idle (INTSTS %08x), #%u\n", s, c->TcMissing);
-            s |= INT_TC;
-            break;
-        }
-        SD_STALL(10);
-    }
+    s = SdWaitInt(c, INT_TC, 2000000);              /* writes: includes card programming busy */
     c->LastIntSts = s;
     if (!(s & INT_TC) || (s & INT_ERRMASK)) return s ? SD_EDATA : SD_ETIMEOUT;
     SD_WR32(c, SDHC_INTSTS, INT_TC);
@@ -541,22 +522,10 @@ static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
             c->XPhase = 0;
             return SD_OK;
         }
-        /* Seen on the PXA986 (goyasdhc, WinPE): after a multi-block write with auto-CMD12 the
-           transfer-complete bit sometimes never comes (INTSTS stays 0x11), although the card has
-           finished: repeating the write always worked. The data lines tell the truth: the controller
-           drops DAT_INHIBIT when the transaction including the card's busy phase is over, and DAT0 is
-           high once the card is no longer busy. */
-        if (c->XPhase == 2) {
-            if (SdDataIdle(c)) {
-                if (++c->TcMissing <= 10)
-                    SD_LOG("goyasdhc: transfer complete missing, data lines idle (INTSTS %08x PRESENT %08x), #%u\n",
-                           s, SD_RD32(c, SDHC_PRESENT), c->TcMissing);
-                SD_WR32(c, SDHC_INTSTS, INT_TC);
-                c->LastIntSts = s;
-                c->XPhase = 0;
-                return SD_OK;
-            }
-        }
+        /* No shortcut here when transfer complete does not come: run 6 on the tablet showed that in
+           many of those cases the controller still wants data (INTSTS BWR, PRESENT buffer write
+           enable), so treating the data lines as "done" lost writes and left the card in the
+           receive state (command timeouts after). The caller aborts (CMD12) and repeats the request. */
         if (idle == 0) return SD_PENDING;
         SD_STALL(5); idle = idle > 5 ? idle - 5 : 0;
     }

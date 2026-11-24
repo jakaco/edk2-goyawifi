@@ -245,9 +245,7 @@ int main(void)
     opt_sdhc = 1; opt_no_cmd6 = 1; f |= run("card without CMD6");
     opt_no_cmd6 = 0; opt_crc_every = 37; f |= run("data CRC error every 37 blocks (retry/fallback)");
     opt_crc_every = 0; opt_busy_us = 20000; f |= run("card busy 20 ms after writes (deferred completion)");
-    opt_drop_tc = 2; f |= run("busy 20 ms, transfer complete lost on every 2nd write (finished by the data lines)");
-    opt_busy_us = 0; f |= run("no busy, transfer complete lost on every 2nd write");
-    opt_drop_tc = 0;
+    opt_busy_us = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;
 }
