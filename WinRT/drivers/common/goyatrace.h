@@ -15,6 +15,7 @@
    Header-only (static); define GOYA_TRACE_ID before including. */
 #pragma once
 #include <ntddk.h>
+#include "goyalog.h"
 
 #ifndef GOYA_TRACE_ID
 #error define GOYA_TRACE_ID
@@ -29,6 +30,23 @@ extern UCHAR __ImageBase;      /* linker-provided start of this driver image */
 
 static volatile PULONG gGtFb;
 static volatile LONG   gGtCaught;
+static GOYALOG_HDR * volatile gGtLog;
+
+/* Header of the persistent log (goyalog.h): this driver's slot. Mapped on first use at
+   <= DISPATCH_LEVEL; plain stores only (no interlocked operations on uncached memory). */
+static GOYALOG_HDR *GtLog(VOID)
+{
+    PHYSICAL_ADDRESS pa;
+    if (gGtLog == NULL && KeGetCurrentIrql() <= DISPATCH_LEVEL) {
+        GOYALOG_HDR *p;
+        pa.QuadPart = GOYALOG_PHYS;
+        p = (GOYALOG_HDR *)MmMapIoSpace(pa, PAGE_SIZE, MmNonCached);
+        if (p != NULL && InterlockedCompareExchangePointer((PVOID volatile *)&gGtLog, p, NULL) != NULL) {
+            MmUnmapIoSpace(p, PAGE_SIZE);
+        }
+    }
+    return gGtLog;
+}
 
 /* 3x5 hex glyphs, 15 bits, row-major, MSB = top-left */
 static const USHORT gGtGlyph[16] = {
@@ -78,6 +96,11 @@ static VOID GoyaTraceStep(ULONG Site)
 {
     PULONG fb = GtFb();
     ULONG y = 8 + (GOYA_TRACE_ID - 1) * 6 * GT_SCALE, x = GT_FB_W - 12 * 4 * GT_SCALE;
+    GOYALOG_HDR *lg = GtLog();
+    if (lg != NULL && GOYA_TRACE_ID < GOYALOG_SLOTS) {
+        lg->Slot[GOYA_TRACE_ID].Site = Site;
+        lg->Slot[GOYA_TRACE_ID].Count++;
+    }
     if (fb == NULL) return;
     x = GtHex(fb, x, y, GOYA_TRACE_ID, 1, 0x00FFFFFF, 0x00202020);
     GtHex(fb, x, y, Site, 2, 0x0000FF00, 0x00202020);
@@ -105,6 +128,13 @@ static LONG GoyaTraceFilter(PEXCEPTION_POINTERS Ep, ULONG Site)
     }
     off = (addr >= base && addr - base < 0x100000) ? addr - base : 0xFFFFFFFF;
     DbgPrint("goya%u: exception %08x at %08x (image+%08x) in site %02x\n", GOYA_TRACE_ID, code, addr, off, Site);
+    {
+        GOYALOG_HDR *lg = gGtLog;                 /* already mapped by GoyaTraceStep (any IRQL here) */
+        if (lg != NULL && GOYA_TRACE_ID < GOYALOG_SLOTS && lg->Slot[GOYA_TRACE_ID].ExcCode == 0) {
+            lg->Slot[GOYA_TRACE_ID].ExcInfo = (Site << 24) | (off & 0x00FFFFFF);
+            lg->Slot[GOYA_TRACE_ID].ExcCode = code ? code : 1;
+        }
+    }
     if (InterlockedExchange(&gGtCaught, 1) == 0 && (fb = GtFb()) != NULL) {
         ULONG y = 8 + (GOYA_TRACE_ID - 1) * 6 * GT_SCALE, x = 8;
         x = GtHex(fb, x, y, GOYA_TRACE_ID, 1, 0x00FFFFFF, 0x00800000);

@@ -37,6 +37,7 @@
 #include <Guid/Pxa988UsbSerial.h>
 
 #include "PlatformBm.h"
+#include "GoyaLog.h"
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
 
@@ -1037,6 +1038,12 @@ PlatformBootManagerAfterConsole (
         );
     }
   }
+
+  //
+  // goyawifi: save the Windows log goyabug left in the reserved RAM (GoyaLog.c);
+  // restarts into recovery if Windows did not shut down cleanly.
+  //
+  GoyaLogSave ();
 
   //
   // Connect device specified by BootDiscoverPolicy variable and

@@ -27,6 +27,8 @@
 [Sources]
   PlatformBm.c
   PlatformBm.h
+  GoyaLog.c
+  GoyaLog.h
 
 [Packages]
   ArmPkg/ArmPkg.dec
@@ -40,6 +42,7 @@
   BaseLib
   BaseMemoryLib
   BootLogoLib
+  CacheMaintenanceLib
   CapsuleLib
   DebugLib
   DevicePathLib
