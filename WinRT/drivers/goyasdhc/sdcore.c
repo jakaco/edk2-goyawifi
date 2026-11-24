@@ -116,6 +116,7 @@ typedef struct _SD_HOST {
     ULONG     XNextCheck;         /* idle time (us) of the next check within one SdXferPoll call */
     ULONG     TcSettled;          /* writes found over by CMD13 although transfer complete never came */
     ULONG     StopSent;           /* of those, writes where the auto CMD12 was missing and the driver sent it */
+    ULONG     ShortWrites;        /* writes where ACMD22 showed blocks missing (or could not be asked): re-sent */
 } SD_HOST;
 
 typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM, SD_PENDING } SD_STATUS;
@@ -507,6 +508,36 @@ static SD_STATUS SdXferBegin(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG coun
     return SD_OK;
 }
 
+/* ACMD22 (SEND_NUM_WR_BLOCKS): how many blocks of the last write the card stored without error.
+   Returns FALSE if the card could not be asked. */
+static BOOLEAN SdWrittenBlocks(SD_HOST *c, ULONG *n)
+{
+    ULONG w = 0, r = 0;
+    UCHAR *b = (UCHAR *)&w;                           /* word-aligned for the FIFO */
+    SD_STATUS e;
+
+    if (SdCmd(c, 55, c->Rca << 16, R_R1, 0, &r) != SD_OK || !(r & 0x20)) return FALSE;
+    SD_WR16(c, SDHC_BLKSIZE, 0x7000 | 4);
+    SD_WR16(c, SDHC_BLKCOUNT, 1);
+    if ((e = SdCmd(c, 22, 0, R_R1 | CMD_DATA, XFER_READ, NULL)) != SD_OK) return FALSE;
+    if ((e = SdPio(c, TRUE, b, 1, 4)) != SD_OK) { SdRecover(c); return FALSE; }
+    *n = (ULONG)b[0] << 24 | (ULONG)b[1] << 16 | (ULONG)b[2] << 8 | b[3];
+    return TRUE;
+}
+
+/* A write found over without transfer complete counts only if the card stored every block of it:
+   run 9 lost FAT32 writes when our own CMD12 was trusted alone (the card was waiting for a block
+   that never reached it, and CMD12 committed the ones before). */
+static int SdWriteCounted(SD_HOST *c, const char *how)
+{
+    ULONG n = 0;
+    BOOLEAN ok = SdWrittenBlocks(c, &n);
+    if (!ok || n != c->XCount || c->TcSettled < 10)
+        SD_LOG("goyasdhc: %s: card stored %u of %u blocks%s\n", how, n, c->XCount, ok ? "" : " (ACMD22 failed)");
+    if (!ok || n != c->XCount) { c->ShortWrites++; return 2; }
+    return 1;
+}
+
 /* After all blocks of a write, with transfer complete missing: is the write over?
    Only when the controller says it has nothing left to do - block count used up, no command or data
    transaction in progress, DAT0 high (card not busy) - is the card asked with CMD13; the write is
@@ -539,11 +570,12 @@ static int SdWriteSettled(SD_HOST *c)
                    st, r12, r, R1_STATE(r));
         if (st != SD_OK || (r12 & R1_ERRORS)) return 2;
         if (R1_STATE(r) != R1_STATE_TRAN || !(r & R1_READY) || (r & R1_ERRORS)) return 2;
+        if (SdWriteCounted(c, "after our CMD12") != 1) return 2;
         c->StopSent++;
         return 1;
     }
     if (R1_STATE(r) != R1_STATE_TRAN || !(r & R1_READY) || (r & R1_ERRORS)) return 2;
-    return 1;
+    return SdWriteCounted(c, "transfer complete missing, card idle");
 }
 
 static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
