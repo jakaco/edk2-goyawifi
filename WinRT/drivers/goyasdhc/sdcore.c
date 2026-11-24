@@ -85,6 +85,8 @@
 #define R1_STATE(r)       (((r) >> 9) & 0xF)
 #define R1_STATE_TRAN     4
 #define R1_READY          0x00000100UL
+#define R1_STATE_PRG      7
+#define TC_CHECK_US       2000            /* SdWriteSettled: first check, then every 2 ms */
 
 typedef struct _SD_HOST {
     volatile UCHAR *Regs;
@@ -109,6 +111,9 @@ typedef struct _SD_HOST {
     ULONG     XCount, XDone;
     BOOLEAN   XRead;
     UCHAR     XPhase;             /* 0 idle, 1 data blocks, 2 waiting for transfer complete (write busy) */
+    UCHAR     XCheck;             /* SdWriteSettled: 0 not started, 1 checking, 2 card said no */
+    ULONG     XNextCheck;         /* idle time (us) of the next check within one SdXferPoll call */
+    ULONG     TcSettled;          /* writes found over by CMD13 although transfer complete never came */
 } SD_HOST;
 
 typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM, SD_PENDING } SD_STATUS;
@@ -496,8 +501,31 @@ static SD_STATUS SdXferBegin(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG coun
     c->XCount = count;
     st = SdCmd(c, idx, arg, R_R1 | CMD_DATA, xfer, NULL);
     if (st != SD_OK) return SdXferFail(c, st);
-    c->XBuf = buf; c->XDone = 0; c->XRead = read; c->XPhase = 1;
+    c->XBuf = buf; c->XDone = 0; c->XRead = read; c->XPhase = 1; c->XCheck = 0;
     return SD_OK;
+}
+
+/* After all blocks of a write, with transfer complete missing: is the write over?
+   Only when the controller says it has nothing left to do - block count used up, no command or data
+   transaction in progress, DAT0 high (card not busy) - is the card asked with CMD13; the write is
+   over only if the card is back in the transfer state, ready for data, with no error bits.
+   Returns 1 = over, 0 = not yet (ask again later), 2 = no (the card is in another state). */
+static int SdWriteSettled(SD_HOST *c)
+{
+    ULONG p = SD_RD32(c, SDHC_PRESENT), r = 0;
+    SD_STATUS st;
+
+    if (SD_RD16(c, SDHC_BLKCOUNT) != 0) return 0;
+    if (p & (PRES_CMD_INHIBIT | PRES_DAT_INHIBIT)) return 0;
+    if (!(p & PRES_DAT0)) return 0;
+    st = SdCmd(c, 13, c->Rca << 16, R_R1, 0, &r);
+    if (c->TcSettled < 10 || st != SD_OK || R1_STATE(r) != R1_STATE_TRAN)
+        SD_LOG("goyasdhc: transfer complete missing: PRESENT %08x, CMD13 %d, card status %08x (state %u)\n",
+               p, st, r, R1_STATE(r));
+    if (st != SD_OK) return 2;
+    if (R1_STATE(r) == R1_STATE_PRG) return 0;            /* still programming */
+    if (R1_STATE(r) != R1_STATE_TRAN || !(r & R1_READY) || (r & R1_ERRORS)) return 2;
+    return 1;
 }
 
 static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
@@ -505,6 +533,8 @@ static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
     ULONG need = c->XRead ? INT_BRR : INT_BWR, idle = IdleUs, s;
 
     if (c->XPhase == 0) return SD_EPARAM;
+    if (c->XCheck == 0) c->XCheck = 1;
+    c->XNextCheck = IdleUs >= 2 * TC_CHECK_US ? TC_CHECK_US : IdleUs >> 1;   /* first check in this call */
     for (;;) {
         s = SD_RD32(c, SDHC_INTSTS);
         if (s & (INT_ERRSUM | INT_ERRMASK)) { c->LastIntSts = s; return SdXferFail(c, SD_EDATA); }
@@ -522,10 +552,22 @@ static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
             c->XPhase = 0;
             return SD_OK;
         }
-        /* No shortcut here when transfer complete does not come: run 6 on the tablet showed that in
-           many of those cases the controller still wants data (INTSTS BWR, PRESENT buffer write
-           enable), so treating the data lines as "done" lost writes and left the card in the
-           receive state (command timeouts after). The caller aborts (CMD12) and repeats the request. */
+        /* Transfer complete missing after a write (PXA986, ~1 in 10 writes). Run 6 showed that the data
+           lines alone do not prove the write is over (writes were lost), so the card itself is asked:
+           see SdWriteSettled. Checked every TC_CHECK_US while nothing else happens; if the card is not
+           back in the transfer state the caller aborts (CMD12) and repeats the request as before. */
+        if (c->XPhase == 2 && !c->XRead && c->XCheck != 2 && IdleUs - idle >= c->XNextCheck) {
+            c->XNextCheck += TC_CHECK_US;
+            switch (SdWriteSettled(c)) {
+            case 1:
+                c->TcSettled++;
+                c->XPhase = 0;
+                return SD_OK;
+            case 2:
+                c->XCheck = 2;                            /* the card says no: stop asking */
+                break;
+            }
+        }
         if (idle == 0) return SD_PENDING;
         SD_STALL(5); idle = idle > 5 ? idle - 5 : 0;
     }

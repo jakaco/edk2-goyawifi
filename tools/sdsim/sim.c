@@ -17,8 +17,10 @@ static uint8_t R[0x100];
 static uint64_t now_us;
 static int opt_v3 = 1, opt_sdhc = 1, opt_require_cd = 1, opt_crc_every = 0, opt_no_cmd6 = 0;
 static unsigned opt_busy_us = 0;             /* card programming time after the last written block */
-static unsigned opt_drop_tc = 0;             /* every Nth write: transfer complete never raised (PXA986) */
-static unsigned tc_counter;
+static unsigned opt_drop_tc = 0;             /* every Nth write: card done, transfer complete never raised (PXA986) */
+static unsigned opt_stuck = 0;               /* every Nth multi-block write: controller wants one more block */
+static unsigned opt_rcv = 0;                 /* every Nth multi-block write: no CMD12, card still receiving */
+static unsigned tc_counter, stuck_counter, rcv_counter;
 static uint64_t busy_until;                  /* TC is raised at this time (0: none pending) */
 static uint64_t dat_busy_until;              /* the card holds DAT0 low until this time */
 static unsigned crc_counter;
@@ -41,7 +43,14 @@ static void raise(uint32_t bits)
     wr32raw(0x30, st);
 }
 
-static uint32_t cardstatus(void) { return (uint32_t)(cstate == ST_DATA || cstate == ST_RCV ? ST_TRAN : cstate) << 9 | 0x100 | (app ? 0x20 : 0); }
+static int rcv_stuck;                        /* opt_rcv: the card is really still in the receive state */
+static uint32_t cardstatus(void)
+{
+    int st = cstate == ST_DATA || cstate == ST_RCV ? ST_TRAN : cstate;
+    if (rcv_stuck) st = ST_RCV;
+    else if (now_us < dat_busy_until) st = ST_PRG;   /* programming written data (DAT0 low) */
+    return (uint32_t)st << 9 | (st == ST_TRAN ? 0x100 : 0) | (app ? 0x20 : 0);
+}
 
 static void load_block(void)
 {
@@ -92,7 +101,7 @@ static void docmd(uint16_t cmd)
     case 6:  if (opt_no_cmd6) { ok = 0; break; }
              memset(fifo, 0, 64); fifo[16] = 0x01; if (arg & 0x80000000) hs = 1;
              wr32raw(0x10, cardstatus()); raise(1); fifo_pos = 0; fifo_len = 64; blocks_left = 1; xfer_read = 1; raise(0x20); return;
-    case 12: cstate = ST_TRAN; blocks_left = 0; resp = cardstatus(); wr32raw(0x10, resp); raise(1); raise(2); return;
+    case 12: cstate = ST_TRAN; blocks_left = 0; rcv_stuck = 0; resp = cardstatus(); wr32raw(0x10, resp); raise(1); raise(2); return;
     case 17: case 18: case 24: case 25: {
         if (cstate != ST_TRAN) { ok = 0; break; }
         int bc = rd16raw(0x06);
@@ -121,9 +130,18 @@ out:
 static void finish_block(void)
 {
     blocks_left--; cur_addr++;
+    if (xfer_multi) wr16raw(0x06, blocks_left);          /* the controller counts the blocks down */
     if (blocks_left > 0) {
         if (xfer_read) load_block(); else { fifo_pos = 0; raise(0x10); }
     } else {
+        if (!xfer_read && xfer_multi && opt_stuck && ++stuck_counter % opt_stuck == 0) {
+            blocks_left = 1; wr16raw(0x06, 1); fifo_pos = 0; raise(0x10);   /* wants one more block, no TC */
+            return;
+        }
+        if (!xfer_read && xfer_multi && opt_rcv && ++rcv_counter % opt_rcv == 0) {
+            rcv_stuck = 1;                               /* lines idle, count 0, but no CMD12: card receiving */
+            return;
+        }
         cstate = ST_TRAN;
         if (!xfer_read && opt_drop_tc && ++tc_counter % opt_drop_tc == 0) {
             busy_until = 0;                                  /* card done, but TC is lost */
@@ -189,9 +207,11 @@ static SD_STATUS async_xfer(SD_HOST *h, BOOLEAN read, ULONGLONG lba, ULONG n, ui
 {
     SD_STATUS st = SdXferBegin(h, read, lba, n, b);
     if (st == SD_OK) {
+        unsigned waits = 0;
         while ((st = SdXferPoll(h, 500)) == SD_PENDING) {
             if (pend) (*pend)++;
             now_us += 1000;
+            if (++waits >= 600) { SdXferAbort(h); break; }   /* like goyasdhc: give up after ~600 ms, re-send */
         }
     }
     if (st != SD_OK) st = SdTransfer(h, read, lba, n, b);
@@ -202,7 +222,7 @@ static int run(const char *name)
 {
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
     cstate = ST_IDLE; app = 0; acmd41_count = 0; crc_counter = 0; hs = 0; buswidth = 1;
-    busy_until = dat_busy_until = 0; tc_counter = 0; blocks_left = 0;
+    busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = 0; blocks_left = 0; rcv_stuck = 0;
     uint8_t *buf = malloc(128 * 512), *chk = malloc(128 * 512);
     for (int i = 0; i < CARD_BLOCKS * 512; i++) disk[i] = (uint8_t)(i * 7 + (i >> 9));
     printf("--- %s\n", name);
@@ -231,7 +251,9 @@ static int run(const char *name)
         }
         printf("async ok (write deferred %u times)\n", pend);
     }
-    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount);
+    if (opt_drop_tc && h.TcSettled == 0) { printf("FAIL lost TC never settled by CMD13\n"); return 1; }
+    if ((opt_stuck || opt_rcv) && h.TcSettled != 0) { printf("FAIL unfinished write counted as done\n"); return 1; }
+    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled);
     return 0;
 }
 
@@ -245,7 +267,11 @@ int main(void)
     opt_sdhc = 1; opt_no_cmd6 = 1; f |= run("card without CMD6");
     opt_no_cmd6 = 0; opt_crc_every = 37; f |= run("data CRC error every 37 blocks (retry/fallback)");
     opt_crc_every = 0; opt_busy_us = 20000; f |= run("card busy 20 ms after writes (deferred completion)");
-    opt_busy_us = 0;
+    opt_drop_tc = 2; f |= run("busy 20 ms, transfer complete lost every 2nd write (CMD13 check)");
+    opt_busy_us = 0; f |= run("transfer complete lost every 2nd write, card not busy");
+    opt_drop_tc = 0; opt_stuck = 2; f |= run("controller wants one more block every 2nd multi-block write (abort, retry)");
+    opt_stuck = 0; opt_rcv = 2; f |= run("card still receiving every 2nd multi-block write (CMD13 says no)");
+    opt_rcv = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;
 }
