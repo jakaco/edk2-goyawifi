@@ -243,6 +243,8 @@ static SD_STATUS async_xfer(SD_HOST *h, BOOLEAN read, ULONGLONG lba, ULONG n, ui
 static int run(const char *name)
 {
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
+    static volatile ULONG apmu; apmu = 0x0013 | (7 << 8) | 0x0008;   /* firmware: pll1_416 / 8 */
+    h.BaseClkReg = &apmu; h.Boost = TRUE;
     cstate = ST_IDLE; app = 0; acmd41_count = 0; crc_counter = 0; hs = 0; buswidth = 1;
     busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = wr_ok = 0; blocks_left = 0; rcv_stuck = 0; buf_stale = 0; predef_count = predef_write = 0;
     uint8_t *buf = malloc(128 * 512), *chk = malloc(128 * 512);
@@ -276,6 +278,8 @@ static int run(const char *name)
     if (opt_rcv_lost && h.ShortWrites == 0) { printf("FAIL lost last block not noticed\n"); return 1; }
     if (opt_drop_tc && h.TcSettled == 0) { printf("FAIL lost TC never settled by CMD13\n"); return 1; }
     if (opt_stuck && h.TcSettled != 0) { printf("FAIL unfinished write counted as done\n"); return 1; }
+    if (h.HighSpeed && h.SpeedLevel == 0 && h.Boost && (h.ClockHz != 41600000 || ((apmu >> 8) & 7) != 4)) { printf("FAIL boost: %u Hz, APMU %08x\n", h.ClockHz, (unsigned)apmu); return 1; }
+    if (!h.Boost && ((apmu >> 8) & 7) != 7) { printf("FAIL base clock not restored, APMU %08x\n", (unsigned)apmu); return 1; }
     if (h.Cmd23 != (opt_no_cmd23 ? 2 : 1)) { printf("FAIL CMD23 state %u\n", h.Cmd23); return 1; }
     if (!opt_no_cmd23 && (h.StopSent != 0 || h.Cmd23Writes == 0)) { printf("FAIL CMD23 writes %u, own CMD12 %u\n", h.Cmd23Writes, h.StopSent); return 1; }
     if (opt_rcv && !opt_rcv_lost && !opt_no_cmd23 && h.TcSettled == 0) { printf("FAIL finished CMD23 write not settled\n"); return 1; }

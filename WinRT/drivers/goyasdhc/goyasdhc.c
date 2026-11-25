@@ -285,7 +285,7 @@ static BOOLEAN GoyaInitCard(PGOYA_EXT X)
     for (tries = 0; tries < 3; tries++) {
         st = SdInitCard(&X->Sd);
         if (st == SD_OK) break;
-        if (X->Sd.SpeedLevel < 3) X->Sd.SpeedLevel++;
+        SdSlower(&X->Sd);
     }
     TrValue(3, SD_RD32(&X->Sd, SDHC_PRESENT));
     if (st != SD_OK) {
@@ -373,6 +373,10 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
         X->Apmu = (PUCHAR)MmMapIoSpace(pa, 8, 0 /* MmNonCached */);
     }
     if (!X->Sd.Regs) { TrStep(0x0E); return SP_RETURN_BAD_CONFIG; }
+    if (X->Apmu) {                                  /* microSD is clocked by APMU_SDH0 (see GoyaClocks) */
+        X->Sd.BaseClkReg = (volatile ULONG *)(X->Apmu + APMU_SDH0_OFF);
+        X->Sd.Boost = TRUE;
+    }
 
     /* make sure a stale firmware setting can never raise an interrupt */
     SD_WR32(&X->Sd, SDHC_SIGEN, 0);
@@ -737,8 +741,8 @@ static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_SHUTDOWN:
-        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u settled by CMD13 (%u with our own CMD12), %u short, CMD23 %u (%u writes), short reads without TC %u, card errors %u, speed level %u, %u kHz\n",
-               X->Ios, X->Fails, X->Deferred, X->Sd.TcSettled, X->Sd.StopSent, X->Sd.ShortWrites, X->Sd.Cmd23, X->Sd.Cmd23Writes, X->Sd.SmallNoTc, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
+        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u settled by CMD13 (%u with our own CMD12), %u short, CMD23 %u (%u writes), short reads without TC %u, card errors %u, speed level %u, boost %u, %u kHz\n",
+               X->Ios, X->Fails, X->Deferred, X->Sd.TcSettled, X->Sd.StopSent, X->Sd.ShortWrites, X->Sd.Cmd23, X->Sd.Cmd23Writes, X->Sd.SmallNoTc, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.Boost, X->Sd.ClockHz / 1000);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_FLUSH:

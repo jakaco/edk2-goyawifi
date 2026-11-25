@@ -96,6 +96,8 @@ typedef struct _SD_HOST {
     ULONG     SpecVer;            /* 0 = 1.0, 1 = 2.0, 2 = 3.0 */
     ULONG     ClockHz;
     ULONG     SpeedLevel;         /* 0 = HS 26 MHz, 1 = 13 MHz, 2 = 6.5 MHz, 3 = 1-bit 6.5 MHz */
+    volatile ULONG *BaseClkReg;   /* APMU clock register of this controller (NULL: fixed base clock) */
+    BOOLEAN   Boost;              /* level 0 with HS: raise the base clock for 41.6 MHz (first to go) */
     BOOLEAN   Ready;
     BOOLEAN   HighCap;            /* block addressed (SDHC/SDXC) */
     BOOLEAN   Wide;
@@ -186,6 +188,45 @@ static SD_STATUS SdSetClock(SD_HOST *c, ULONG hz)
     SD_WR16(c, SDHC_CLKCTRL, (USHORT)(clk | 0x0005));
     SD_STALL(1000);                                /* >= 74 clocks before the next command */
     return SD_OK;
+}
+
+/* Base clock from the APMU: pll1 416 MHz / (divider + 1). The firmware sets divider 7 (52 MHz), which
+   gives 26 MHz at most within the 50 MHz high-speed limit (the controller divides by 2N). Divider 4
+   (83.2 MHz) gives 41.6 MHz. Only touched if the register still holds the firmware's source (pll1_416,
+   bits 7:6 = 0) and a divider of 4 or 7. */
+#define APMU_DIV_SHIFT    8
+#define APMU_DIV_MASK     0x0700
+#define APMU_SRC_MASK     0x00C0
+#define APMU_FC           0x0800
+#define APMU_PLL_HZ       416000000UL
+#define APMU_DIV_NORMAL   7
+#define APMU_DIV_BOOST    4
+
+static VOID SdSetBase(SD_HOST *c, BOOLEAN boost)
+{
+    ULONG v, d, want = boost ? APMU_DIV_BOOST : APMU_DIV_NORMAL, us;
+
+    if (!c->BaseClkReg) return;
+    v = *c->BaseClkReg;
+    d = (v & APMU_DIV_MASK) >> APMU_DIV_SHIFT;
+    if ((v & APMU_SRC_MASK) || (d != APMU_DIV_NORMAL && d != APMU_DIV_BOOST)) {
+        SD_LOG("goyasdhc: APMU clock %08x not the firmware's setting, base clock left alone\n", v);
+        c->BaseClkReg = NULL; c->Boost = FALSE;
+        return;
+    }
+    if (d == want) { c->BaseHz = APMU_PLL_HZ / (d + 1); return; }
+    SD_WR16(c, SDHC_CLKCTRL, 0);                    /* card clock off while the source changes */
+    *c->BaseClkReg = (v & ~APMU_DIV_MASK) | (want << APMU_DIV_SHIFT) | APMU_FC;
+    for (us = 0; us < 1000 && (*c->BaseClkReg & APMU_FC); us += 10) SD_STALL(10);
+    SD_STALL(50);
+    c->BaseHz = APMU_PLL_HZ / (want + 1);
+}
+
+/* One step slower after errors: the raised base clock goes first, then the speed levels. */
+static VOID SdSlower(SD_HOST *c)
+{
+    if (c->Boost) { c->Boost = FALSE; SD_LOG("goyasdhc: errors at 41.6 MHz: back to 26 MHz\n"); }
+    else if (c->SpeedLevel < 3) c->SpeedLevel++;
 }
 
 static ULONG SdWaitInt(SD_HOST *c, ULONG mask, ULONG us)
@@ -398,7 +439,7 @@ static BOOLEAN SdSwitchHighSpeed(SD_HOST *c)
 static ULONG SdTargetHz(SD_HOST *c)
 {
     switch (c->SpeedLevel) {
-    case 0:  return c->HighSpeed ? 26000000UL : 13000000UL;
+    case 0:  return c->HighSpeed ? (c->Boost && c->BaseClkReg ? 41600000UL : 26000000UL) : 13000000UL;
     case 1:  return 13000000UL;
     default: return 6500000UL;
     }
@@ -463,6 +504,7 @@ static SD_STATUS SdInitCard(SD_HOST *c)
 
     if (c->SpeedLevel == 0 && SdSwitchHighSpeed(c)) c->HighSpeed = TRUE;
     SdHostCtrl(c);
+    SdSetBase(c, c->Boost && c->HighSpeed && c->SpeedLevel == 0);
     if ((st = SdSetClock(c, SdTargetHz(c))) != SD_OK) return st;
     if ((st = SdWaitTran(c)) != SD_OK) return st;
 
@@ -709,7 +751,7 @@ static SD_STATUS SdTransfer(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count
         if (!c->Ready && (st = SdInitCard(c)) != SD_OK) {
             c->FailIntSts = c->LastIntSts;
             if (++initfail >= 2) break;               /* the caller may run at DISPATCH_LEVEL */
-            if (c->SpeedLevel < 3) c->SpeedLevel++;
+            SdSlower(c);
             continue;
         }
         if (attempt < 2) {
@@ -729,7 +771,7 @@ static SD_STATUS SdTransfer(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count
         SD_LOG("goyasdhc: %s lba %u x%u failed (%d, INTSTS %08x), attempt %u\n", read ? "read" : "write",
                (ULONG)lba, count, st, c->FailIntSts, attempt);
         if (attempt >= 1) {                           /* slow down and start over */
-            if (c->SpeedLevel < 3) c->SpeedLevel++;
+            SdSlower(c);
             c->Ready = FALSE;
         }
     }
