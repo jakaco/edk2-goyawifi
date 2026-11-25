@@ -173,7 +173,7 @@ echo === 4/4 copying to %SD%\
 robocopy "%WORK%" %SD%\ /E /NFL /NDL /NJH /NP
 if errorlevel 8 (echo copy to card failed & exit /b 1)
 for %%F in (install.wim install.esd install.swm) do if exist %SD%\sources\%%F echo NOTE: %SD%\sources\%%F is left over from an earlier copy and is not needed for WinPE - you can delete it.
-if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL /NDL /NJH /NP >nul
+call :goyape
 echo.
 echo Done. Card in the tablet, then boot the EDK2 firmware: goyawifi-uefi-winrt-release.img
 echo The EDK2 image to use is the "winrt" one (RTC set to 2012-08-01).
@@ -191,7 +191,7 @@ if not exist %SD%\boot mkdir %SD%\boot
 if not exist %SD%\sources mkdir %SD%\sources
 copy /y "%WORK%\boot\boot.sdi" %SD%\boot\boot.sdi >nul || (echo copy of boot.sdi failed & exit /b 1)
 copy /y "%WORK%\sources\boot.wim" %SD%\sources\boot.wim >nul || (echo copy of boot.wim failed - is the partition big enough? & exit /b 1)
-if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL /NDL /NJH /NP >nul
+call :goyape
 echo === 4/4 BCD: RAM-disk WinPE entry
 bcdedit /store "%B%" /enum {ramdiskoptions} >nul 2>&1 || (bcdedit /store "%B%" /create {ramdiskoptions} /d "Goya WinPE ramdisk" >nul || exit /b 1)
 bcdedit /store "%B%" /set {ramdiskoptions} ramdisksdidevice partition=%SD% >nul || exit /b 1
@@ -220,6 +220,25 @@ bcdedit /store "%B%" /enum %PEG%
 echo.
 echo Done. WinPE is the default boot entry on the card (5 s menu; the full install is the second entry).
 echo Back to the full install as default:  bcdedit /store %B% /default ^<its identifier^>
+exit /b 0
+
+rem ---- :goyape - \goyape on the card: autorun.cmd, goyacmp.exe (byte compare used by its tests) and
+rem install\ with the goyasdhc package for install.flag (an empty file named install.flag in \goyape puts
+rem that goyasdhc into the Windows RT install on the card at the next WinPE boot) ----
+:goyape
+if exist "%HERE%goyape\autorun.cmd" robocopy "%HERE%goyape" %SD%\goyape /E /NFL /NDL /NJH /NP >nul
+set GDIR=
+if exist "%KITDRV%\goyacmp.exe" set GDIR=%KITDRV%\
+if not defined GDIR if exist "%HERE%goyacmp.exe" set GDIR=%HERE%
+if defined GDIR copy /y "%GDIR%goyacmp.exe" %SD%\goyape\goyacmp.exe >nul
+if not defined GDIR echo   goyacmp.exe not found: the compares in \goyape\autorun.cmd will fail
+set GDIR=
+if exist "%KITDRV%\goyasdhc.sys" set GDIR=%KITDRV%\
+if not defined GDIR if exist "%HERE%goyasdhc.sys" set GDIR=%HERE%
+if not defined GDIR exit /b 0
+if not exist %SD%\goyape\install mkdir %SD%\goyape\install
+for %%X in (sys inf cat) do if exist "%GDIR%goyasdhc.%%X" copy /y "%GDIR%goyasdhc.%%X" %SD%\goyape\install\ >nul
+echo   \goyape: autorun.cmd, goyacmp.exe, install\goyasdhc.* (create \goyape\install.flag to use it)
 exit /b 0
 
 :optdrv

@@ -122,7 +122,9 @@
 /* ESD watchdog as in Samsung's bt532_ts.c: the chip raises an interrupt every 100 scans (~1 s) even
    without a touch; if it stays silent for 3 s it has locked up and is initialised again. */
 #define Z_SCAN_HZ         100
-#define WD_TICKS          (3000 / POLL_MS)
+#define WD_TICKS          (3000 / POLL_MS)     /* 3 s without an interrupt: ask the chip (probe) */
+#define WD_LOCK_TICKS     (10000 / POLL_MS)    /* 10 s without the heartbeat it used to send: locked up */
+#define Z_INT_MASK        (BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP | BIT_ICON_EVENT)
 #define Z_RETRIES 8
 
 typedef struct _DEV_EXT {
@@ -143,6 +145,8 @@ typedef struct _DEV_EXT {
     LONG           LastX, LastY;
     ULONG          Tick;            /* poll counter (POLL_MS each) */
     ULONG          LastAlive;       /* Tick of the last sign of life from the chip */
+    ULONG          LastProbe;       /* Tick of the last register probe by the watchdog */
+    BOOLEAN        HbSeen;          /* the chip sent its periodic (heartbeat) interrupt since the last init */
 } DEV_EXT;
 
 /* status shown by the heartbeat thread */
@@ -185,7 +189,8 @@ static VOID HeartbeatThread(PVOID Context)
         /* 5 2: polls done | 5 3: INT_ENABLE readback (high) TOUCH_MODE readback (low) |
            5 4: GPIO94 MFPR (high 16) | direction (bit 4, 1 = output) | level now (bit 0) | 5 5: first 4 raw bytes
            of the last point-status read | 5 6: polls that saw the interrupt line low |
-           5 7: chip re-initialisations by the ESD watchdog (high 16) | read-failure re-inits (low 16) */
+           5 7: ESD watchdog re-inits (bits 31:24) | watchdog probes that found the chip fine (23:16) |
+           heartbeat seen since the last init (bit 15) | read-failure re-inits (14:0) */
         TraceExtra(2, gPolls);
         TraceExtra(3, gReadback);
         if (gGpio != NULL) {
@@ -402,7 +407,7 @@ static NTSTATUS ZInitChip(DEV_EXT *E)
     CHK(ZWriteU16(E, Z_INIT_MODE, 0));
     CHK(ZWriteU16(E, Z_TOUCH_MODE, 0));
     CHK(ZCmd(E, Z_CALIBRATE));
-    CHK(ZWriteU16(E, Z_INT_ENABLE, BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP | BIT_ICON_EVENT));
+    CHK(ZWriteU16(E, Z_INT_ENABLE, Z_INT_MASK));
     for (i = 0; i < 10; i++) { ZCmd(E, Z_CLEAR_INT); KeStallExecutionProcessor(15); }
     CHK(ZWriteU16(E, Z_PERIODIC_INT, Z_SCAN_HZ));          /* heartbeat interrupt ~1 s, for the watchdog */
     {
@@ -463,7 +468,7 @@ static VOID PollOnce(DEV_EXT *E)
     if (intLow) gIntLow++;
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
         gReadFails++;
-        gWatchdog = (gWatchdog & 0xFFFF0000) | ((gWatchdog + 1) & 0xFFFF);
+        gWatchdog = (gWatchdog & 0xFFFF8000) | ((gWatchdog + 1) & 0x7FFF);
         ReleaseButton(E);
         E->Initialized = FALSE;                             /* chip lost: re-initialise */
         E->InitTries = 0;
@@ -473,6 +478,9 @@ static VOID PollOnce(DEV_EXT *E)
     if (intLow || status != 0) E->LastAlive = E->Tick;      /* an interrupt (touch or heartbeat) */
     gRaw4 = ((ULONG)raw[0] << 24) | ((ULONG)raw[1] << 16) | ((ULONG)raw[2] << 8) | raw[3];
     if (status == 0) {
+        /* INT low with an empty status is the periodic interrupt (vendor: "maybe periodical repeated
+           int"): this chip does send the heartbeat, so the watchdog may rely on it. */
+        if (intLow) { E->HbSeen = TRUE; gWatchdog |= 0x8000; }
         /* The vendor interrupt handler always ends with CLEAR_INT, also when the status is 0. The chip
            keeps INT asserted (and stops reporting) until it is cleared, so clear whenever INT is low. */
         if (intLow) ZCmd(E, Z_CLEAR_INT);
@@ -531,16 +539,30 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
                 gInfo = ((gLastIbmr & 3) << 28) | ((E->Clock ? (READ_REGISTER_ULONG(E->Clock) & 0xFF) : 0xEE) << 16) | (gLastIsr & 0xFFFF);
             }
             E->Initialized = (BOOLEAN)NT_SUCCESS(st);
-            if (E->Initialized) { E->LastAlive = Tick; E->InitTries = 0; }
+            if (E->Initialized) { E->LastAlive = E->LastProbe = Tick; E->InitTries = 0; E->HbSeen = FALSE; gWatchdog &= ~0x8000UL; }
         }
         return;
     }
-    if (Tick - E->LastAlive > WD_TICKS) {                   /* no interrupt for 3 s: chip locked up */
-        gWatchdog += 0x10000;
-        ReleaseButton(E);
-        E->Initialized = FALSE;
-        E->InitTries = 0;
-        return;
+    /* ESD watchdog. The vendor driver power-cycles the chip after 3 s without an interrupt; we can only
+       reset it over I2C, and a reset recalibrates the panel: a finger on the screen at that moment becomes
+       part of the baseline and touches are ignored until the chip's drift compensation catches up (up to
+       a minute). Some chips/firmware also never send the heartbeat, which used to mean a reset every 3 s.
+       So after 3 s of silence first ask the chip: INT_ENABLE still holding our mask means it kept its
+       settings (an ESD reset clears them). Re-initialise only if that read fails or differs, or if a chip
+       that did send heartbeats has gone 10 s without one while no finger is down. */
+    if (Tick - E->LastAlive > WD_TICKS && Tick - E->LastProbe > WD_TICKS) {
+        USHORT ie = 0;
+        BOOLEAN ok = (BOOLEAN)(NT_SUCCESS(ZReadU16(E, Z_INT_ENABLE, &ie)) && ie == Z_INT_MASK);
+        E->LastProbe = Tick;
+        if (ok && !(E->HbSeen && !E->Down && Tick - E->LastAlive > WD_LOCK_TICKS)) {
+            gWatchdog = (gWatchdog & 0xFF00FFFF) | ((gWatchdog + 0x10000) & 0x00FF0000);   /* probe passed */
+        } else {
+            gWatchdog = (gWatchdog & 0x00FFFFFF) | ((gWatchdog + 0x1000000) & 0xFF000000); /* re-init */
+            ReleaseButton(E);
+            E->Initialized = FALSE;
+            E->InitTries = 0;
+            return;
+        }
     }
     PollOnce(E);
 }

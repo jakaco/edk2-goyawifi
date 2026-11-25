@@ -173,12 +173,35 @@ table.
 
 ---
 
+## 11. goyasdhc write fixes and goyalog (merged from jakaco/edk2-goyawifi, branch goyalog)
+
+17 commits on top of 35e5bdc, each with its hardware run in the commit message:
+
+* RequestTimerCall callbacks never came in WinPE (requests sat until Storport's
+  timeout and a LUN reset): waits are done in place again (`USE_TIMER` keeps the
+  timer path).
+* About 1 in 10 multi-block writes never raised transfer complete although every
+  block went out (BLKCNT 0, card still in the receive state: the controller left
+  out the automatic CMD12). Tried and dropped because they lost data: finishing
+  by idle data lines (run 6), sending our own CMD12 (run 9). ACMD22's block count
+  is garbage on this controller unless the data line is reset first (run 10).
+  Fix: CMD23 before every multi-block write, no auto CMD12; a stall with the card
+  back in the transfer state is a complete write (run 12: 0 stalls, 0 retries,
+  identical copy, clean FAT).
+* 41.6 MHz: the APMU_SDH0 divider goes from 8 to 4 (83.2 MHz base); errors drop
+  back to 26 MHz first.
+* goyalog (see README), PMIC reboot reason for recovery, goyacmp.exe (byte
+  compare for WinPE, which has no fc or script engine), WinPE flags in
+  `\goyape`: bench.flag (speed test), twrp.flag, install.flag (copies
+  `\goyape\install\goyasdhc.*` into the Windows RT install).
+  `make-goya-sd.cmd` now puts goyacmp.exe and the goyasdhc package there.
+
+---
+
 ## Next
 
-* **goyasdhc speed**: done, smoother on hardware: requests are finished
-  from Storport's timer when the card stalls for more than 0.5 ms (instead of
-  spinning at DISPATCH_LEVEL), and data goes through the data port directly.
-  Later: DMA plus the real interrupt.
+* **goyasdhc**: CMD23 writes and 41.6 MHz merged (section 11). Later: DMA plus
+  the real interrupt.
 * **GPU (goyagpu, Vivante GC1000)**: steps 1–2 done — shared KMD/UMD ABI and the hardware
   layer (power, reset, identification, MMUv1, front-end ring, submission), checked against the
   Linux etnaviv sequences by `tools/gpusim/ringtest.c`. Next: the WDDM 1.2 KMD; see

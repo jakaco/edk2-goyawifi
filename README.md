@@ -206,9 +206,21 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
   buffers that aren't cache-line aligned); `StorPortGetDeviceBase` with the
   interface type the resources carry. The DSDT also lists the SDH interrupt
   (GIC 71), now unused.
-  Long card waits (mostly while the card stores written data) are finished
-  from Storport's timer instead of spinning, and data goes through the
-  controller's data port directly: noticeably smoother on hardware.
+  Data goes through the controller's data port directly. Multi-block writes
+  announce their length with CMD23: about 1 in 10 writes never raised
+  transfer complete on this controller (each cost an abort and re-send); with
+  CMD23 a test run had 0 stalls, 0 retries and an identical copy. 41.6 MHz high
+  speed (base clock raised to 83.2 MHz), falling back to 26 MHz and the lower
+  speed levels on errors. Card waits are done in place: in WinPE, requests
+  deferred to Storport's RequestTimerCall were never called back. Full history
+  in the commit messages of 2852194..97def4d (hardware runs 1-12).
+* **goyalog**: goyabug keeps a text log (boot number, drivers and programs
+  loaded, DbgPrint, stop screen) in the reserved RAM at 0x08100000; after a
+  watchdog reset the firmware saves it as `\goya\logs\boot-NNNN-<state>.txt`
+  on the card's FAT32 system partition and, unless Windows shut down cleanly,
+  restarts into recovery (TWRP) so the log can be pulled with adb.
+  `\goya\reboot-recovery` on that partition also restarts into recovery
+  (PMIC reboot reason 6, which S-Boot honours; RTC_BR0 alone is ignored).
 * **goyabug** (bugcheck callback): loads early ("7 01"); draws the stop code,
   parameters and the faulting driver on the stop screen.
 * Display through the firmware framebuffer (1024x600).
@@ -236,8 +248,8 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
 * goyaosk on-screen keyboard with touch.
 * Full Windows RT install on microSD (`install-winrt-sd.cmd`): now possible to
   try, since goyasdhc works as the boot disk driver.
-* goyasdhc write speed and reliability under load (only reads and a drive
-  letter confirmed so far).
+* goyasdhc at 41.6 MHz on a full Windows RT boot (runs 1-12 were WinPE with
+  CMD23 at 26 MHz; the 41.6 MHz build was installed but its run not reported).
 * Whether the random early stop is completely gone (one more since the timer
   fix, before the async-abort check).
 
