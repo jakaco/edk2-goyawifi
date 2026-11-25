@@ -234,6 +234,24 @@ move /y %WIN%\Windows\Panther\SetupInfo* "%~dp0setuplogs\blackboard\" >> "%OUT%"
 dir /a %WIN%\Windows\Panther >> "%OUT%" 2>&1
 :noresetsetup
 
+rem ---- cpus.flag (1 or 2): how many CPUs Windows RT may use. 1 = bcdedit onecpu on (what the
+rem installer sets), 2 = onecpu removed, for firmware that leaves CPU1 waiting in its ACPI parking
+rem page (MADT CPU1 enabled). The entry is the one in winrt.flag / winrt.done, else {default}. ----
+if not exist "%~dp0cpus.flag" goto nocpus
+set NCPU=
+set /p NCPU=<"%~dp0cpus.flag"
+move /y "%~dp0cpus.flag" "%~dp0cpus.done" >nul
+set CPUID=
+if exist "%~dp0winrt.done" set /p CPUID=<"%~dp0winrt.done"
+if exist "%~dp0winrt.flag" set /p CPUID=<"%~dp0winrt.flag"
+if not defined CPUID set CPUID={default}
+echo --- CPUs for Windows RT %CPUID%: %NCPU% >> "%OUT%"
+set BCDS="%~d0\EFI\Microsoft\Boot\BCD"
+if "%NCPU:~0,1%"=="1" (bcdedit /store %BCDS% /set %CPUID% onecpu on >> "%OUT%" 2>&1) else (bcdedit /store %BCDS% /deletevalue %CPUID% onecpu >> "%OUT%" 2>&1)
+echo bcdedit exit code %ERRORLEVEL% >> "%OUT%"
+bcdedit /store %BCDS% /enum %CPUID% >> "%OUT%" 2>&1
+:nocpus
+
 rem ---- winrt.flag (holds the BCD id of the Windows RT entry): boot Windows RT once. The boot after
 rem that comes back to WinPE (bootsequence is one-shot), where twrp.flag, left in place, goes to TWRP;
 rem the firmware saves the Windows boot's log to \goya\logs on the way. ----
