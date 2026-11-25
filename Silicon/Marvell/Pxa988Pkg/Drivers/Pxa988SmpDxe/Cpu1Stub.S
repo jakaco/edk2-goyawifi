@@ -220,6 +220,11 @@ Pxa988Cpu1OsLoop:
   str     r1, [r4, #MB_STATE]
   dsb
   isb
+  //
+  // r0 = the parking page (physical): Windows's entry code (hal.dll, 8520)
+  // finds the processor state it saved at page + 0x18 through r0
+  //
+  mov     r0, r7
   bx      r2                        // bit 0 set = Thumb entry
 
 Pxa988Cpu1OsWait:

@@ -282,6 +282,9 @@ set RTID=
 set /p RTID=<"%~dp0winrt.flag"
 move /y "%~dp0winrt.flag" "%~dp0winrt.done" >nul
 echo --- one-time boot of Windows RT %RTID% at %TIME% >> "%OUT%"
+rem after a Windows boot that did not finish, bootmgr starts the recovery sequence instead, whose
+rem winload.exe this install does not have (0xc000000f): always boot Windows itself
+bcdedit /store "%~d0\EFI\Microsoft\Boot\BCD" /set %RTID% recoveryenabled No >> "%OUT%" 2>&1
 bcdedit /store "%~d0\EFI\Microsoft\Boot\BCD" /bootsequence %RTID% >> "%OUT%" 2>&1
 echo bcdedit exit code %ERRORLEVEL% >> "%OUT%"
 if errorlevel 1 goto nowinrt

@@ -128,17 +128,18 @@ assert rd(mu, GICD + 0x208) == 1 << 5, 'SPI not re-pended: ISPENDR2 %#x' % rd(mu
 print('stray SPI handed back ok')
 
 # the OS: JumpAddress first, then ProcessorId, then the SGI. Entry is Thumb:
-#   movs r0, #0x5a ; b .
+#   mov r1, r0 ; movs r0, #0x5a ; b .
 OS = PAGE + 0x100
-mu.mem_write(OS, struct.pack('<HH', 0x205a, 0xe7fe))
+mu.mem_write(OS, struct.pack("<HHH", 0x4601, 0x205a, 0xe7fe))
 wr(mu, PAGE + 0x8, OS | 1); wr(mu, PAGE + 0xc, 0)
 wr(mu, PAGE + 0x0, 1)
 wr(mu, GICC + 0x0C, 0x00000400)
 run(mu, maxins=200)
 pc = mu.reg_read(UC_ARM_REG_PC)
 assert mu.reg_read(UC_ARM_REG_CPSR) & 0x20, 'not in Thumb state'
-assert pc == OS + 2, 'pc %#x' % pc
+assert pc == OS + 4, 'pc %#x' % pc
 assert mu.reg_read(UC_ARM_REG_R0) == 0x5a
+assert mu.reg_read(UC_ARM_REG_R1) == PAGE, 'r0 at the OS entry was %#x, not the parking page' % mu.reg_read(UC_ARM_REG_R1)
 assert rd(mu, PAGE + 0x8) == 0 and rd(mu, PAGE + 0xc) == 0, 'JumpAddress not cleared before the jump'
 assert rd(mu, MB + 0x24) == 4
 assert mu.reg_read(UC_ARM_REG_CPSR) & 0xC0 == 0xC0, 'interrupts not masked at the OS entry'
