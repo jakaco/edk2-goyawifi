@@ -57,24 +57,18 @@ rem bench.tmp stays on the NTFS partition for the compare after the restart
 echo --- end %TIME% >> "%OUT%"
 :nobench
 
-rem ---- install.flag: put the goyasdhc package from .\install\ into the Windows RT install on the NTFS
-rem partition (System32\drivers\goyasdhc.sys, which the boot loads, and the copy staged for Windows
-rem setup in \goya\drivers so setup cannot bring the old one back). Each copy is byte-compared. ----
+rem ---- install.flag: put every driver package in .\install\ (NAME.sys, with NAME.inf/.cat if
+rem present) into the Windows RT install on the NTFS partition: System32\drivers\NAME.sys, which the
+rem boot loads (the first replaced copy is kept as NAME.sys.old), and the copy staged for Windows
+rem setup in \goya\drivers so setup cannot bring the old one back. Each copy is byte-compared. ----
 if not exist "%~dp0install.flag" goto noinstall
 move /y "%~dp0install.flag" "%~dp0install.done" >nul
 set WIN=
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
-echo --- install goyasdhc into %WIN% >> "%OUT%"
+echo --- install drivers from .\install into %WIN% >> "%OUT%"
 if not defined WIN (echo no Windows partition found >> "%OUT%" & goto noinstall)
 set DRV=%WIN%\Windows\System32\drivers
-if exist %DRV%\goyasdhc.sys if not exist %DRV%\goyasdhc.sys.old copy /b /y %DRV%\goyasdhc.sys %DRV%\goyasdhc.sys.old >nul
-copy /b /y "%~dp0install\goyasdhc.sys" %DRV%\goyasdhc.sys >> "%OUT%" 2>&1
-"%~dp0goyacmp.exe" "%~dp0install\goyasdhc.sys" %DRV%\goyasdhc.sys >> "%OUT%" 2>&1
-echo System32\drivers compare exit code %ERRORLEVEL% >> "%OUT%"
-if not exist %WIN%\goya\drivers goto noinstall
-call :stage sys
-call :stage inf
-call :stage cat
+for %%f in ("%~dp0install\*.sys") do call :instdrv %%~nf
 :noinstall
 
 rem ---- setuplogs.flag: copy Windows Setup's logs from the Windows RT partition to .\setuplogs\ ----
@@ -256,11 +250,22 @@ echo WinPE autorun > "%~d0\goya\reboot-recovery"
 wpeutil reboot
 goto :eof
 
-rem ---- :stage EXT - copy goyasdhc.EXT into \goya\drivers of the Windows partition and compare ----
+rem ---- :instdrv NAME - install .\install\NAME.sys (see install.flag) ----
+:instdrv
+echo -- %1 >> "%OUT%"
+if exist %DRV%\%1.sys if not exist %DRV%\%1.sys.old copy /b /y %DRV%\%1.sys %DRV%\%1.sys.old >nul
+copy /b /y "%~dp0install\%1.sys" %DRV%\%1.sys >> "%OUT%" 2>&1
+"%~dp0goyacmp.exe" "%~dp0install\%1.sys" %DRV%\%1.sys >> "%OUT%" 2>&1
+echo System32\drivers\%1.sys compare exit code %ERRORLEVEL% >> "%OUT%"
+if not exist %WIN%\goya\drivers goto :eof
+for %%e in (sys inf cat) do if exist "%~dp0install\%1.%%e" call :stage %1 %%e
+goto :eof
+
+rem ---- :stage NAME EXT - copy NAME.EXT into \goya\drivers of the Windows partition and compare ----
 :stage
-copy /b /y "%~dp0install\goyasdhc.%1" %WIN%\goya\drivers\goyasdhc.%1 >> "%OUT%" 2>&1
-"%~dp0goyacmp.exe" "%~dp0install\goyasdhc.%1" %WIN%\goya\drivers\goyasdhc.%1 >> "%OUT%" 2>&1
-echo goya\drivers\goyasdhc.%1 compare exit code %ERRORLEVEL% >> "%OUT%"
+copy /b /y "%~dp0install\%1.%2" %WIN%\goya\drivers\%1.%2 >> "%OUT%" 2>&1
+"%~dp0goyacmp.exe" "%~dp0install\%1.%2" %WIN%\goya\drivers\%1.%2 >> "%OUT%" 2>&1
+echo goya\drivers\%1.%2 compare exit code %ERRORLEVEL% >> "%OUT%"
 goto :eof
 
 rem ---- :compare NAME - byte compare of boot.wim and its NTFS copy with goyacmp.exe (WinPE has no fc.exe or script engine) ----
