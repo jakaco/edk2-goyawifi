@@ -178,6 +178,7 @@ static VOID Snapshot(VOID)
 #define GPIO_PHYS 0xD4019000ULL
 #define VOL_BITS  ((1UL << 1) | (1UL << 2))
 static PULONG gGplr;
+static VOID SmpProbe(const char *When);
 
 static VOID SnapshotThread(PVOID Context)
 {
