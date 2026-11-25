@@ -142,6 +142,7 @@ assert mu.reg_read(UC_ARM_REG_R0) == 0x5a
 assert mu.reg_read(UC_ARM_REG_R1) == PAGE, 'r0 at the OS entry was %#x, not the parking page' % mu.reg_read(UC_ARM_REG_R1)
 assert rd(mu, PAGE + 0x8) == 0 and rd(mu, PAGE + 0xc) == 0, 'JumpAddress not cleared before the jump'
 assert rd(mu, MB + 0x24) == 4
+assert rd(mu, GICC + 0x00) == 0 and rd(mu, GICC + 0x04) == 0, 'GIC CPU interface not handed over disabled'
 assert mu.reg_read(UC_ARM_REG_CPSR) & 0xC0 == 0xC0, 'interrupts not masked at the OS entry'
 print('OS entry ok: pc=%#x (Thumb) r0=%#x JumpAddress cleared, state 4' % (pc, mu.reg_read(UC_ARM_REG_R0)))
 

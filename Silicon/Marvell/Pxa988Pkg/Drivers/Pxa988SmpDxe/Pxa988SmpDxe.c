@@ -276,7 +276,22 @@ WdtMeasure (
   WdtUnlock ();
   MmioWrite32 (WDT_WMR, 0xFFFF);
   WdtUnlock ();
-  MmioWrite32 (WDT_WMER, 0x1);              // count, no reset
+  MmioWrite32 (WDT_WMER, 0x3);              // count (needs both bits); the match is 0xFFFF ticks away
+  //
+  // 1 ms first: a fast counter would reach the match (a reset) within the
+  // 250 ms measurement
+  //
+  V0 = MmioRead32 (WDT_WVR) & 0xFFFF;
+  MicroSecondDelay (1000);
+  V1 = MmioRead32 (WDT_WVR) & 0xFFFF;
+  if (((V1 - V0) & 0xFFFF) > 60) {
+    WdtUnlock ();
+    MmioWrite32 (WDT_WMER, 0);
+    mWdtTicksPerSecond = 0;
+    Log ("watchdog: counter too fast (%u ticks in 1 ms)\n", (V1 - V0) & 0xFFFF);
+    return;
+  }
+
   V0 = MmioRead32 (WDT_WVR) & 0xFFFF;
   MicroSecondDelay (250000);
   V1 = MmioRead32 (WDT_WVR) & 0xFFFF;

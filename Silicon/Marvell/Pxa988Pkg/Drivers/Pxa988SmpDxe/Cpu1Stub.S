@@ -216,6 +216,16 @@ Pxa988Cpu1OsLoop:
   mov     r1, #0
   str     r1, [r7, #PP_JUMP]        // acknowledge: the OS sees JumpAddress cleared
   str     r1, [r7, #PP_JUMP + 4]
+  //
+  // Hand over the GIC CPU interface the way it came out of reset: disabled,
+  // everything masked. Windows keeps sending this core SGIs while it waits,
+  // and one left pending here would fire as soon as the OS unmasks IRQs,
+  // before its interrupt controller code has set this core up.
+  //
+  mov     r1, #0
+  str     r1, [r0, #GICC_CTLR]
+  str     r1, [r0, #GICC_PMR]
+  dsb
   mov     r1, #4
   str     r1, [r4, #MB_STATE]
   dsb
