@@ -42,6 +42,7 @@
 #include <miniport.h>
 #include <storport.h>
 #include <string.h>
+#include <intrin.h>                     /* __dsb for SD_DMA_SYNC */
 
 #ifndef RtlZeroMemory
 #define RtlZeroMemory(d, l)    memset((d), 0, (l))
@@ -67,6 +68,9 @@
 __declspec(dllimport) ULONG __cdecl DbgPrint(const char *Format, ...);
 #define SD_LOG(...)       DbgPrint(__VA_ARGS__)
 #define SD_DATA_PORT(c)   ((volatile ULONG *)((c)->Regs + SDHC_BUFFER))   /* direct access, no call per word */
+/* The bounce buffer is mapped uncached (normal memory, write-combined): no cache maintenance, only
+   ordering between the CPU's buffer accesses and the controller's register writes/reads. */
+#define SD_DMA_SYNC()     __dsb(_ARM_BARRIER_SY)
 
 #include "sdcore.c"
 
@@ -78,6 +82,9 @@ __declspec(dllimport) ULONG __cdecl DbgPrint(const char *Format, ...);
 #define GT_SCALE   3
 
 __declspec(dllimport) PVOID MmMapIoSpace(PHYSICAL_ADDRESS PhysicalAddress, SIZE_T NumberOfBytes, ULONG CacheType);
+__declspec(dllimport) PVOID MmAllocateContiguousMemorySpecifyCache(SIZE_T NumberOfBytes, PHYSICAL_ADDRESS LowestAcceptableAddress,
+    PHYSICAL_ADDRESS HighestAcceptableAddress, PHYSICAL_ADDRESS BoundaryAddressMultiple, ULONG CacheType);
+__declspec(dllimport) PHYSICAL_ADDRESS MmGetPhysicalAddress(PVOID BaseAddress);
 void *__cdecl _exception_info(void);
 extern UCHAR __ImageBase;
 
@@ -320,6 +327,39 @@ static PVOID DeviceBase(PGOYA_EXT X, PPORT_CONFIGURATION_INFORMATION Cfg, PACCES
     return p;
 }
 
+/* SDMA bounce buffer: physically contiguous, below 4 GiB, inside one 512 KiB block (the SDMA engine
+   stops at every 512 KiB boundary), mapped write-combined (uncached normal memory, so the controller
+   and the CPU see the same bytes without cache maintenance). Allocated once per boot (FindAdapter is
+   called again on a restart); smaller sizes are tried if memory is fragmented. Without it: PIO. */
+#define MM_WRITE_COMBINED 2
+static PUCHAR gDmaVa;
+static ULONG  gDmaPa, gDmaBytes;
+
+static VOID GoyaDmaBuffer(PGOYA_EXT X)
+{
+    ULONG size;
+    PHYSICAL_ADDRESS lo, hi, bound;
+
+    if (!gDmaVa) {
+        lo.QuadPart = 0; hi.QuadPart = 0xFFFFFFFFULL; bound.QuadPart = SD_SDMA_BOUNDARY;
+        for (size = MAX_XFER_BLOCKS * SD_BLOCK; size >= 64 * 1024 && !gDmaVa; size >>= 1) {
+            gDmaVa = (PUCHAR)MmAllocateContiguousMemorySpecifyCache(size, lo, hi, bound, MM_WRITE_COMBINED);
+            if (gDmaVa) gDmaBytes = size;
+        }
+        if (gDmaVa) {
+            PHYSICAL_ADDRESS pa = MmGetPhysicalAddress(gDmaVa);
+            gDmaPa = pa.LowPart;
+            if (pa.HighPart || (gDmaPa & 3) || (gDmaPa / SD_SDMA_BOUNDARY) != ((gDmaPa + gDmaBytes - 1) / SD_SDMA_BOUNDARY)) {
+                SD_LOG("goyasdhc: SDMA buffer at %08x%08x unusable, PIO only\n", pa.HighPart, pa.LowPart);
+                gDmaBytes = 0;
+            }
+        }
+        if (gDmaBytes) SD_LOG("goyasdhc: SDMA bounce buffer %u KiB at %08x\n", gDmaBytes / 1024, gDmaPa);
+        else if (!gDmaVa) SD_LOG("goyasdhc: no contiguous memory for an SDMA buffer, PIO only\n");
+    }
+    if (gDmaBytes) { X->Sd.DmaVa = gDmaVa; X->Sd.DmaPa = gDmaPa; X->Sd.DmaBytes = gDmaBytes; }
+}
+
 static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR Args,
                              PPORT_CONFIGURATION_INFORMATION Cfg, PBOOLEAN Again)
 {
@@ -382,6 +422,8 @@ static ULONG GoyaFindAdapter_(PVOID Ext, PVOID HwContext, PVOID BusInfo, PCHAR A
     SD_WR32(&X->Sd, SDHC_SIGEN, 0);
     SD_WR32(&X->Sd, SDHC_INTSTS, 0xFFFFFFFF);
     QuietSharedLine(X);
+
+    GoyaDmaBuffer(X);
 
     Cfg->MaximumTransferLength = MAX_XFER_BLOCKS * SD_BLOCK;
     Cfg->NumberOfPhysicalBreaks = MAX_XFER_BLOCKS + 1;
@@ -741,8 +783,8 @@ static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_SHUTDOWN:
-        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u settled by CMD13 (%u with our own CMD12), %u short, CMD23 %u (%u writes), short reads without TC %u, card errors %u, speed level %u, boost %u, %u kHz\n",
-               X->Ios, X->Fails, X->Deferred, X->Sd.TcSettled, X->Sd.StopSent, X->Sd.ShortWrites, X->Sd.Cmd23, X->Sd.Cmd23Writes, X->Sd.SmallNoTc, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.Boost, X->Sd.ClockHz / 1000);
+        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u settled by CMD13 (%u with our own CMD12), %u short, CMD23 %u (%u writes), short reads without TC %u, SDMA %u (failed %u%s), card errors %u, speed level %u, boost %u, %u kHz\n",
+               X->Ios, X->Fails, X->Deferred, X->Sd.TcSettled, X->Sd.StopSent, X->Sd.ShortWrites, X->Sd.Cmd23, X->Sd.Cmd23Writes, X->Sd.SmallNoTc, X->Sd.DmaXfers, X->Sd.DmaFails, X->Sd.DmaOff ? ", off" : "", X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.Boost, X->Sd.ClockHz / 1000);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_FLUSH:

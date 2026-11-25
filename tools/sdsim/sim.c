@@ -29,6 +29,16 @@ static uint8_t prev_block[512];              /* disk contents under the block wr
 static uint64_t busy_until;                  /* TC is raised at this time (0: none pending) */
 static uint64_t dat_busy_until;              /* the card holds DAT0 low until this time */
 static unsigned crc_counter;
+/* SDMA: a data command with XFER bit 0 moves its blocks between the card and this memory window
+   (physical address DMA_PA_BASE) by itself, no BRR/BWR. Exactly the programmed block count; pauses at
+   every 512 KiB boundary with the DMA interrupt until the address register is written again. */
+#define DMA_PA_BASE 0x40000000u
+#define DMA_WINDOW  (1024 * 512)
+static int opt_dma;                          /* driver gets a bounce buffer */
+static int opt_dma_err;                      /* every Nth SDMA transfer: ADMA/DMA error (bit 25) at the start */
+static unsigned dma_err_counter;
+static uint8_t *dma_mem;
+static int dma_on, dma_paused; static uint32_t dma_addr; static int dma_left;
 
 #define CARD_BLOCKS (32768 * 2)              /* 32 MiB card */
 static uint8_t *disk;
@@ -137,6 +147,8 @@ static void docmd(uint16_t cmd)
         cstate = xfer_read ? ST_DATA : ST_RCV;
         wr32raw(0x10, cardstatus()); raise(1);
         if (xfer_read) load_block(); else { fifo_pos = 0; fifo_len = 512; raise(0x10); }
+        dma_on = xfer & 1; dma_paused = 0; dma_left = (idx == 18 || idx == 25) ? bc : 1; dma_addr = rd32raw(0x00);
+        if (dma_on && opt_dma_err && ++dma_err_counter % opt_dma_err == 0) { dma_on = 0; blocks_left = 0; cstate = ST_TRAN; raise(0x02000000); }
         return; }
     default: ok = 0;
     }
@@ -173,8 +185,33 @@ static void finish_block(void)
     }
 }
 
+static void dma_pump(void)
+{
+    while (dma_on && !dma_paused && dma_left > 0 && blocks_left > 0) {
+        if (dma_addr < DMA_PA_BASE || dma_addr + 512 > DMA_PA_BASE + DMA_WINDOW) { fprintf(stderr, "SIM: SDMA address %08x outside the buffer\n", dma_addr); exit(2); }
+        uint8_t *m = dma_mem + (dma_addr - DMA_PA_BASE);
+        if (xfer_read) {
+            if (fifo_len != 512 || fifo_pos != 0) return;            /* block not loaded (CRC error) */
+            memcpy(m, fifo, 512); fifo_pos = 512;
+            wr32raw(0x30, rd32raw(0x30) & ~0x20u);
+            dma_addr += 512; dma_left--; wr32raw(0x00, dma_addr);
+            finish_block();
+        } else {
+            if (fifo_pos != 0) return;
+            memcpy(fifo, m, 512);
+            wr32raw(0x30, rd32raw(0x30) & ~0x10u);
+            dma_addr += 512; dma_left--; wr32raw(0x00, dma_addr);
+            memcpy(prev_block, disk + (size_t)cur_addr * 512, 512); memcpy(disk + (size_t)cur_addr * 512, fifo, 512); wr_ok++;
+            fifo_pos = 512; finish_block();
+        }
+        if (dma_left > 0 && dma_addr % 0x80000 == 0) { dma_paused = 1; raise(0x08); }
+    }
+    if (dma_on && (dma_left == 0 || blocks_left == 0)) dma_on = 0;
+}
+
 static uint32_t hw_rd(int o, int sz)
 {
+    dma_pump();
     if (o == 0x20 && sz == 4) {
         if (!xfer_read || fifo_pos >= fifo_len) { fprintf(stderr, "SIM: buffer underrun\n"); exit(2); }
         uint32_t v = fifo[fifo_pos] | fifo[fifo_pos+1] << 8 | fifo[fifo_pos+2] << 16 | (uint32_t)fifo[fifo_pos+3] << 24;
@@ -206,8 +243,9 @@ static void hw_wr(int o, int sz, uint32_t v)
         return;
     }
     if (o == 0x30 && sz == 4) { uint32_t st = rd32raw(0x30) & ~v; if (!(st & 0xFFFF0000)) st &= ~0x8000; wr32raw(0x30, st); return; }
-    if (o == 0x2F) { if (v & 1) { memset(R, 0, 0x40); } if (v & 6) { wr32raw(0x30, 0); } if (v & 5) blocks_left = 0; if (v & 5) buf_stale = 0; return; }   /* DAT reset ends the data transaction */
+    if (o == 0x2F) { if (v & 1) { memset(R, 0, 0x40); } if (v & 6) { wr32raw(0x30, 0); } if (v & 5) blocks_left = 0; if (v & 5) buf_stale = 0; if (v & 5) dma_on = 0; return; }   /* DAT reset ends the data transaction */
     if (sz == 1) R[o] = v; else if (sz == 2) wr16raw(o, v); else wr32raw(o, v);
+    if (o == 0x00 && sz == 4) { dma_addr = v; dma_paused = 0; }
     if (o == 0x0E && sz == 2) docmd(v);
 }
 
@@ -245,6 +283,8 @@ static int run(const char *name)
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
     static volatile ULONG apmu; apmu = 0x0013 | (7 << 8) | 0x0008;   /* firmware: pll1_416 / 8 */
     h.BaseClkReg = &apmu; h.Boost = TRUE;
+    if (opt_dma) { h.DmaVa = dma_mem; h.DmaPa = DMA_PA_BASE; h.DmaBytes = DMA_WINDOW; }
+    dma_on = dma_paused = 0; dma_err_counter = 0;
     cstate = ST_IDLE; app = 0; acmd41_count = 0; crc_counter = 0; hs = 0; buswidth = 1;
     busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = wr_ok = 0; blocks_left = 0; rcv_stuck = 0; buf_stale = 0; predef_count = predef_write = 0;
     uint8_t *buf = malloc(128 * 512), *chk = malloc(128 * 512);
@@ -285,14 +325,16 @@ static int run(const char *name)
     if (opt_rcv && !opt_rcv_lost && !opt_no_cmd23 && h.TcSettled == 0) { printf("FAIL finished CMD23 write not settled\n"); return 1; }
     if (opt_rcv && !opt_rcv_lost && opt_no_cmd23 && h.StopSent == 0) { printf("FAIL missing auto CMD12 never sent by the driver\n"); return 1; }
     if ((!opt_rcv || opt_rcv_lost) && h.StopSent != 0) { printf("FAIL CMD12 sent without a receiving card\n"); return 1; }
-    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u, own CMD12 %u, short %u, CMD23 %u/%u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled, h.StopSent, h.ShortWrites, h.Cmd23, h.Cmd23Writes);
+    if (opt_dma && !opt_dma_err && (h.DmaXfers == 0 || h.DmaOff)) { printf("FAIL SDMA not used (%u transfers, off %d)\n", h.DmaXfers, h.DmaOff); return 1; }
+    if (opt_dma_err == 1 && (!h.DmaOff || h.DmaXfers != 0)) { printf("FAIL SDMA failing every time but not switched off\n"); return 1; }
+    if (!opt_dma && h.DmaXfers) { printf("FAIL SDMA without a buffer\n"); return 1; }
+    printf("PASS (SDMA %u/%u failed%s, clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u, own CMD12 %u, short %u, CMD23 %u/%u)\n", h.DmaXfers, h.DmaFails, h.DmaOff ? " off" : "", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled, h.StopSent, h.ShortWrites, h.Cmd23, h.Cmd23Writes);
     return 0;
 }
 
-int main(void)
+static int suite(void)
 {
     int f = 0;
-    disk = malloc((size_t)CARD_BLOCKS * 512);
     f |= run("SDHC, SDHCI 3.0");
     opt_v3 = 0;  f |= run("SDHC, SDHCI 2.0 divider");
     opt_v3 = 1; opt_sdhc = 0; f |= run("SDSC v1 card (no CMD8, byte addressing)");
@@ -308,6 +350,21 @@ int main(void)
     opt_rcv_lost = 1; f |= run("no CMD23: auto CMD12 missing and the last block lost (ACMD22 catches it)");
     opt_rcv = 0; opt_rcv_lost = 0; opt_drop_tc = 2; f |= run("no CMD23: transfer complete lost every 2nd write");
     opt_drop_tc = 0; opt_no_cmd23 = 0;
+    return f;
+}
+
+int main(void)
+{
+    int f = 0;
+    disk = malloc((size_t)CARD_BLOCKS * 512);
+    dma_mem = malloc(DMA_WINDOW);
+    printf("===== PIO =====\n");
+    f |= suite();
+    printf("===== SDMA =====\n");
+    opt_dma = 1; f |= suite();
+    opt_dma_err = 3; f |= run("SDMA error every 3rd transfer (PIO repeat)");
+    opt_dma_err = 1; f |= run("SDMA error every time (switched off)");
+    opt_dma_err = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;
 }
