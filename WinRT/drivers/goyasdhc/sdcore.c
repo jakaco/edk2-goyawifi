@@ -1,5 +1,6 @@
 /*
- * sdcore.c - self-contained SD memory card protocol + SDHCI (PXAv3) host code, polled PIO.
+ * sdcore.c - self-contained SD memory card protocol + SDHCI (PXAv3) host code, polled; data by
+ * SDMA through a bounce buffer when the includer provides one (DmaVa/DmaPa), else PIO.
  *
  * Used by goyasdhc.c (Windows storport miniport) and by tools/sdsim (Linux simulator test).
  * The includer defines, before including this file:
@@ -7,6 +8,7 @@
  *   SD_STALL(us)                                     busy wait
  *   SD_LOG(fmt, ...)                                 debug print (may be empty)
  *   SD_DATA_PORT(c)  (optional) volatile ULONG * to the buffer data port, for the fast block copy
+ *   SD_DMA_SYNC()    (optional) barrier between CPU accesses to the DMA buffer and the controller
  *   ULONG/USHORT/UCHAR/BOOLEAN/ULONGLONG types, TRUE/FALSE
  *
  * Nothing here depends on an OS SD stack: Windows 8.0 RT has no sdport.sys, and the inbox
@@ -14,6 +16,7 @@
  */
 
 /* ---- SDHCI registers ---- */
+#define SDHC_SDMA       0x00
 #define SDHC_BLKSIZE    0x04
 #define SDHC_BLKCOUNT   0x06
 #define SDHC_ARG        0x08
@@ -47,14 +50,16 @@
 
 #define INT_CC            0x00000001
 #define INT_TC            0x00000002
+#define INT_DMA           0x00000008      /* SDMA buffer boundary reached */
 #define INT_BWR           0x00000010
 #define INT_BRR           0x00000020
 #define INT_ERRSUM        0x00008000
 #define INT_ERRMASK       0xFFFF0000
 #define INT_DTO           0x00100000
 #define INT_CTO           0x00010000
-#define INT_ENABLE_ALL    0x03FF0033      /* CC TC BWR BRR + all errors; never card int */
+#define INT_ENABLE_ALL    0x03FF003B      /* CC TC DMA BWR BRR + all errors; never card int */
 
+#define XFER_DMA          0x0001
 #define XFER_BLKCNT_EN    0x0002
 #define XFER_ACMD12       0x0004
 #define XFER_READ         0x0010
@@ -78,6 +83,11 @@
 #define R_R7    R_R1
 
 #define SD_BLOCK          512
+#define SD_SDMA_BOUNDARY  0x80000UL       /* BLKSIZE bits 14:12 = 7: the SDMA engine stops every 512 KiB */
+#define SD_DMA_GIVEUP     3               /* DMA transfers failing in a row before DMA is switched off */
+#ifndef SD_DMA_SYNC
+#define SD_DMA_SYNC()
+#endif
 #define SD_DEFAULT_BASE   52000000UL      /* APMU SDH1: pll1_416 / 8, set by the firmware */
 
 /* card status (R1) */
@@ -123,6 +133,16 @@ typedef struct _SD_HOST {
     BOOLEAN   XPreDef;            /* current write was announced with CMD23 (no auto CMD12) */
     ULONG     Cmd23Writes;        /* multi-block writes sent with CMD23 */
     ULONG     SmallNoTc;          /* short reads (CMD6, ACMD22) taken without transfer complete */
+    /* SDMA: the includer sets DmaVa/DmaPa/DmaBytes to a physically contiguous, uncached buffer that
+       does not cross a 512 KiB boundary; asynchronous transfers that fit go through it. */
+    PUCHAR    DmaVa;
+    ULONG     DmaPa;
+    ULONG     DmaBytes;
+    BOOLEAN   DmaOff;             /* switched off after SD_DMA_GIVEUP failures in a row */
+    BOOLEAN   XDma;               /* current asynchronous transfer uses SDMA */
+    ULONG     DmaXfers;           /* transfers done by SDMA */
+    ULONG     DmaFails;           /* SDMA transfers that failed (repeated by PIO) */
+    ULONG     DmaFailRun;         /* failures since the last good SDMA transfer */
 } SD_HOST;
 
 typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM, SD_PENDING } SD_STATUS;
@@ -575,6 +595,17 @@ static BOOLEAN SdSetBlockCount(SD_HOST *c, ULONG count)
 static SD_STATUS SdXferFail(SD_HOST *c, SD_STATUS st)
 {
     c->FailIntSts = c->LastIntSts;
+    if (c->XDma) {
+        c->DmaFails++;
+        if (c->DmaFails <= 10)
+            SD_LOG("goyasdhc: SDMA %s of %u blocks failed (%d, INTSTS %08x, SDMA address %08x of %08x)\n",
+                   c->XRead ? "read" : "write", c->XCount, st, c->LastIntSts, SD_RD32(c, SDHC_SDMA), c->DmaPa);
+        if (++c->DmaFailRun >= SD_DMA_GIVEUP && !c->DmaOff) {
+            c->DmaOff = TRUE;
+            SD_LOG("goyasdhc: %u SDMA failures in a row: SDMA off, PIO from now on\n", c->DmaFailRun);
+        }
+        c->XDma = FALSE;
+    }
     SdRecover(c);
     if (c->XCount > 1) SdCmd(c, 12, 0, R_R1B | CMD_ABORT, 0, NULL);
     SdWaitTran(c);
@@ -598,10 +629,20 @@ static SD_STATUS SdXferBegin(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG coun
     else idx = read ? 17 : 24;
     SD_WR16(c, SDHC_BLKSIZE, 0x7000 | SD_BLOCK);
     SD_WR16(c, SDHC_BLKCOUNT, (USHORT)count);
-    c->XCount = count;
+    c->XCount = count; c->XRead = read;
+    c->XDma = c->DmaVa && !c->DmaOff && count * SD_BLOCK <= c->DmaBytes;
+    if (c->XDma) {
+        /* SDMA: the controller moves every block itself; the CPU only copies the request's data into
+           the bounce buffer now (writes) or out of it at transfer complete (reads). */
+        if (!read) memcpy(c->DmaVa, buf, count * SD_BLOCK);
+        SD_DMA_SYNC();
+        SD_WR32(c, SDHC_SDMA, c->DmaPa);
+        xfer |= XFER_DMA;
+    }
     st = SdCmd(c, idx, arg, R_R1 | CMD_DATA, xfer, NULL);
     if (st != SD_OK) return SdXferFail(c, st);
-    c->XBuf = buf; c->XDone = 0; c->XRead = read; c->XPhase = 1; c->XCheck = 0;
+    c->XBuf = buf; c->XDone = 0; c->XCheck = 0;
+    c->XPhase = c->XDma ? 2 : 1;                      /* SDMA: straight to waiting for transfer complete */
     return SD_OK;
 }
 
@@ -687,6 +728,20 @@ static int SdWriteSettled(SD_HOST *c)
     return SdWriteCounted(c, "transfer complete missing, card idle");
 }
 
+/* An SDMA transfer is over: reads copy the data out of the bounce buffer. */
+static VOID SdDmaDone(SD_HOST *c)
+{
+    if (c->XRead) {
+        SD_DMA_SYNC();
+        memcpy(c->XBuf, c->DmaVa, c->XCount * SD_BLOCK);
+    }
+    c->XDone = c->XCount;
+    c->XDma = FALSE;
+    c->DmaXfers++;
+    c->DmaFailRun = 0;
+    if (c->DmaXfers == 1) SD_LOG("goyasdhc: first SDMA transfer done (%s, %u blocks)\n", c->XRead ? "read" : "write", c->XCount);
+}
+
 static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
 {
     ULONG need = c->XRead ? INT_BRR : INT_BWR, idle = IdleUs, s;
@@ -705,10 +760,19 @@ static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
             idle = IdleUs;                                /* progress: the idle budget starts again */
             continue;
         }
+        if (c->XDma && (s & INT_DMA)) {
+            /* buffer boundary (cannot happen with a buffer inside one 512 KiB block, but harmless):
+               writing the address register makes the engine go on from where it stopped */
+            SD_WR32(c, SDHC_INTSTS, INT_DMA);
+            SD_WR32(c, SDHC_SDMA, SD_RD32(c, SDHC_SDMA));
+            idle = IdleUs;
+            continue;
+        }
         if (c->XPhase == 2 && (s & INT_TC)) {
-            SD_WR32(c, SDHC_INTSTS, INT_TC);
+            SD_WR32(c, SDHC_INTSTS, INT_TC | (c->XDma ? INT_DMA : 0));
             c->LastIntSts = s;
             c->XPhase = 0;
+            if (c->XDma) SdDmaDone(c);
             return SD_OK;
         }
         /* Transfer complete missing after a write (PXA986, ~1 in 10 writes). Run 6 showed that the data
@@ -721,6 +785,7 @@ static SD_STATUS SdXferPoll(SD_HOST *c, ULONG IdleUs)
             case 1:
                 c->TcSettled++;
                 c->XPhase = 0;
+                if (c->XDma) SdDmaDone(c);
                 return SD_OK;
             case 2:
                 c->XCheck = 2;                            /* the card says no: stop asking */

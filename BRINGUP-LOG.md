@@ -10,15 +10,16 @@ Current status of every part (works / doesn't / untested): see
 
 ---
 
-## Where it stands (2026-11-22)
+## Where it stands (2026-11-25)
 
 * **WinPE** boots from microSD, runs for long periods without stopping, and has
   working **touch** (mouse pointer), **hardware keys** and the **microSD card as
   a disk with a drive letter**.
 * **Full Windows RT** has been installed to a 16 GB microSD card and its first
   boot runs, with the card at full speed (26 MHz high-speed, 4-bit) and
-  thousands of reads and writes without a single failure. It is slow and
-  choppy because the SD driver copies by CPU and busy-waits (see "Next").
+  thousands of reads and writes without a single failure. Setup now finishes
+  and Windows RT reaches the **desktop** (account "Goya", automatic logon), with
+  touch and the SD card using DMA (section 12).
 * Firmware to flash for Windows: `goyawifi-uefi-winrt-release.img.tar.md5`
   (DVFS off, RTC 2012-08-01, kernel fix-ups, DSDT with the SDH interrupt).
 
@@ -196,12 +197,42 @@ table.
   `\goyape\install\goyasdhc.*` into the Windows RT install).
   `make-goya-sd.cmd` now puts goyacmp.exe and the goyasdhc package there.
 
+## 12. Setup to the desktop, touch fix, SD card DMA
+
+* **"Windows could not update the computer's boot configuration"**: Setup's
+  boot-entry step (SpBcd, 0x3EE) failed because the BCD store on the card was
+  missing `Description\System` and `Description\TreatAsSystem` (both DWORD 1).
+  Without them the BCD library rejects the system store with 0xC0000098
+  ("volume externally altered"); bootmgr doesn't check them, so the card boots
+  anyway. `bcdboot /s` onto a removable card leaves them out.
+  `install-winrt-sd.cmd` now adds them; WinPE's `fixbcd.flag` repairs an
+  installed card.
+* Setup recovery after a failed run (WinPE `resetsetup.flag`): move
+  `Panther\SetupInfo*` away (the blackboard can't be reopened, GLE 8), reset
+  ChildCompletion setup.exe=0, GeneralizationState=7 and UnattendPasses
+  specialize=0.
+* Touch: upstream 682359e (no ESD reset unless the chip really stopped; a
+  reset recalibrated the panel with a finger on it). No resets were logged
+  during the desktop session.
+* WinPE `install.flag` installs every `NAME.sys` (with .inf/.cat) in
+  `\goyape\install`.
+* **SDMA in goyasdhc**: a 512 KiB uncached (write-combined) contiguous bounce
+  buffer inside one 512 KiB SDMA boundary; data commands set XFER bit 0 and
+  the DMA interrupt rewrites the address. A failed DMA request is repeated by
+  PIO, and three failures in a row turn DMA off. `tools/sdsim` models SDMA
+  (boundary pause, error injection) and runs the whole suite in PIO and SDMA.
+  WinPE speed test, 158.6 MB (run 13 PIO → run 14 SDMA): FAT32 read 14.9 →
+  11.8 s, uncached read 15.0 → 12.1 s (about 13 MB/s), NTFS write 9.1 → 9.7 s
+  (card-limited); copies identical, 1729 SDMA transfers, 0 failed. Windows RT
+  desktop session: 873 of 890 requests by SDMA, 0 failed.
+
 ---
 
 ## Next
 
-* **goyasdhc**: CMD23 writes and 41.6 MHz merged (section 11). Later: DMA plus
-  the real interrupt.
+* **goyasdhc**: CMD23 writes, 41.6 MHz and SDMA done (sections 11, 12).
+  Later: the real interrupt instead of waiting in place; ADMA2 to skip the
+  bounce copy.
 * **GPU (goyagpu, Vivante GC1000)**: steps 1–2 done — shared KMD/UMD ABI and the hardware
   layer (power, reset, identification, MMUv1, front-end ring, submission), checked against the
   Linux etnaviv sequences by `tools/gpusim/ringtest.c`. Next: the WDDM 1.2 KMD; see

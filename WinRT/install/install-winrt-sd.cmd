@@ -161,6 +161,13 @@ bcdedit /store %B% /set {default} bootstatuspolicy IgnoreAllFailures
 bcdedit /store %B% /set {default} sos on
 bcdedit /store %B% /set {bootmgr} timeout 3
 bcdedit /store %B% /enum {default}
+rem Windows only takes a BCD store as its system store with Description\System and TreatAsSystem
+rem set. bcdboot /s onto the card's partition leaves them out, and Windows Setup then stops with
+rem "could not update the computer's boot configuration" (system store open: STATUS_FILE_INVALID).
+reg load HKLM\GOYABCD %B% >nul || goto fail
+reg add HKLM\GOYABCD\Description /v System /t REG_DWORD /d 1 /f >nul
+reg add HKLM\GOYABCD\Description /v TreatAsSystem /t REG_DWORD /d 1 /f >nul
+reg unload HKLM\GOYABCD >nul || goto fail
 
 echo === 6/6 first boot: unattend + diagnostics
 if "%UNATTEND%"=="1" (
