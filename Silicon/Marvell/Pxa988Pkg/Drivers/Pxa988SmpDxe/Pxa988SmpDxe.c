@@ -76,7 +76,7 @@ STATIC UINT32                        mSavedCc2;
 STATIC BOOLEAN                       mCpu1Released;
 STATIC EFI_EVENT                     mExitBsEvent;
 STATIC EFI_EVENT                     mEndOfDxeEvent;
-STATIC CHAR8                         mReport[640];
+STATIC CHAR8                         mReport[1536];
 STATIC UINTN                         mReportLen;
 STATIC PXA988_CPU1_PARKING_PROTOCOL  mParking;
 
@@ -101,7 +101,7 @@ Log (
   )
 {
   VA_LIST  Args;
-  CHAR8    Line[160];
+  CHAR8    Line[256];
   UINTN    Len;
 
   VA_START (Args, Format);
@@ -331,6 +331,41 @@ Cpu1Start (
 }
 
 /**
+  What the previous OS session did with CPU1's parking page (DRAM survives a
+  warm restart): state 3 with no wake-ups = the OS never sent the wake-up
+  SGI; wake-ups but state 3 = it did, but CPU1 did not see ProcessorId and
+  JumpAddress; state 4 = CPU1 jumped to the OS entry point.
+**/
+STATIC
+VOID
+ReportPreviousSession (
+  VOID
+  )
+{
+  volatile UINT32  *Mb;
+  volatile UINT32  *Pp;
+
+  InvalidateDataCacheRange (mPages, 2 * EFI_PAGE_SIZE);
+  Mb = (volatile UINT32 *)(mPage + MB_OFFSET);
+  Pp = (volatile UINT32 *)mPage;
+  if (Mb[MB_ALIVE / 4] != ALIVE_MAGIC) {
+    Log ("previous session: no parking page left (cold start or CPU1 not parked)\n");
+    return;
+  }
+
+  Log ("previous session: CPU1 state %u (3 parked, 4 jumped to the OS), %u wake-ups, ProcessorId 0x%08x, JumpAddress 0x%08x%08x, heartbeat %u\n",
+    Mb[MB_STATE / 4],
+    Mb[MB_WAKES / 4],
+    Pp[PP_CPU_ID / 4],
+    Pp[PP_JUMP / 4 + 1],
+    Pp[PP_JUMP / 4],
+    Mb[MB_HEARTBEAT / 4]);
+  Log ("previous session: CPU0 page ProcessorId 0x%08x JumpAddress 0x%08x\n",
+    *(volatile UINT32 *)(mPages + PP_CPU_ID),
+    *(volatile UINT32 *)(mPages + PP_JUMP));
+}
+
+/**
   Send CPU1 into the parking-protocol loop. Returns TRUE when it got there.
 **/
 STATIC
@@ -395,17 +430,14 @@ Pxa988SmpInitialize (
 
   //
   // One page per MADT GICC, reserved for the OS's lifetime (the OS must not
-  // use it). Below 4 GiB: CPU1 runs it with the MMU off.
+  // use it): a fixed EfiReservedMemoryType range from GoyaWifiPlatformPeiLib,
+  // which a warm restart keeps, so first report what the previous session
+  // (WinPE or Windows) did with CPU1's page.
   //
-  Pages  = 0xFFFFFFFF;
-  Status = gBS->AllocatePages (AllocateMaxAddress, EfiReservedMemoryType, 2, &Pages);
-  if (EFI_ERROR (Status)) {
-    Log ("no memory for the parking pages: %r\n", Status);
-    goto Publish;
-  }
-
+  Pages  = PXA988_PARKING_PAGES;
   mPages = (UINT8 *)(UINTN)Pages;
   mPage  = mPages + EFI_PAGE_SIZE;
+  ReportPreviousSession ();
   ZeroMem (mPages, 2 * EFI_PAGE_SIZE);
   for (Cpu = 0; Cpu < 2; Cpu++) {
     *(UINT32 *)(mPages + Cpu * EFI_PAGE_SIZE + PP_CPU_ID) = 0xFFFFFFFF;
@@ -441,10 +473,6 @@ Pxa988SmpInitialize (
   if (Parked) {
     mParking.ParkedAddress[0] = (UINT64)(UINTN)mPages;
     mParking.ParkedAddress[1] = (UINT64)(UINTN)mPage;
-  } else if (!mCpu1Released) {
-    gBS->FreePages (Pages, 2);
-    mPages = NULL;
-    mPage  = NULL;
   }
 
 Publish:
