@@ -21,6 +21,8 @@ static unsigned opt_drop_tc = 0;             /* every Nth write: card done, tran
 static unsigned opt_stuck = 0;               /* every Nth multi-block write: controller wants one more block */
 static unsigned opt_rcv = 0;                 /* every Nth multi-block write: no CMD12, card still receiving */
 static unsigned opt_rcv_lost = 0;            /* with opt_rcv: the last block never reached the card */
+static int opt_no_cmd23 = 0;                 /* card without CMD23 (no answer, like an illegal command) */
+static int predef_count, predef_write;       /* CMD23 count for the next command; current write announced */
 static unsigned tc_counter, stuck_counter, rcv_counter;
 static unsigned wr_ok;                       /* ACMD22: blocks stored by the last write command */
 static uint8_t prev_block[512];              /* disk contents under the block written last */
@@ -81,6 +83,7 @@ static void docmd(uint16_t cmd)
     int idx = cmd >> 8, rsp = cmd & 3, data = cmd & 0x20;
     uint32_t arg = rd32raw(0x08), xfer = rd16raw(0x0C), resp = 0;
     int ok = 1, was_app = app; app = 0;
+    int predef = predef_count; predef_count = 0;
 
     if (opt_require_cd && (R[0x28] & 0xC0) != 0xC0) { raise(0x00010000); return; }   /* no card -> timeout */
     if (!(rd16raw(0x2C) & 4)) { raise(0x00010000); return; }
@@ -108,8 +111,11 @@ static void docmd(uint16_t cmd)
     case 13: resp = cardstatus(); break;
     case 16: blklen = arg; resp = cardstatus(); break;
     case 6:  if (opt_no_cmd6) { ok = 0; break; }
-             memset(fifo, 0, 64); fifo[16] = 0x01; if (arg & 0x80000000) hs = 1;
+             memset(fifo, 0, 64); fifo[13] = 0x03; fifo[16] = 0x01;   /* group 1: default + high speed supported */ if (arg & 0x80000000) hs = 1;
              wr32raw(0x10, cardstatus()); raise(1); fifo_pos = 0; fifo_len = 64; blocks_left = 1; xfer_read = 1; raise(0x20); return;
+    case 23: if (opt_no_cmd23) { raise(0x00010000); return; }
+             if (cstate != ST_TRAN) { ok = 0; break; }
+             predef_count = arg & 0xFFFF; resp = cardstatus(); break;
     case 12: cstate = ST_TRAN; blocks_left = 0; rcv_stuck = 0; resp = cardstatus(); wr32raw(0x10, resp); raise(1); raise(2); return;
     case 17: case 18: case 24: case 25: {
         if (cstate != ST_TRAN) { ok = 0; break; }
@@ -120,6 +126,10 @@ static void docmd(uint16_t cmd)
         if ((rd16raw(0x04) & 0xFFF) != 512) { fprintf(stderr, "SIM: bad blksize\n"); exit(2); }
         blocks_left = (idx == 18 || idx == 25) ? bc : 1;
         if ((idx == 18 || idx == 25) && !(xfer & 0x22)) { fprintf(stderr, "SIM: multi without blkcnt\n"); exit(2); }
+        predef_write = idx == 25 && predef;
+        if (predef_write && predef != bc) { fprintf(stderr, "SIM: CMD23 count %d, BLKCOUNT %d\n", predef, bc); exit(2); }
+        if (predef_write && (xfer & 0x04)) { fprintf(stderr, "SIM: auto CMD12 after CMD23\n"); exit(2); }
+        if (idx == 25 && !predef && !(xfer & 0x04)) { fprintf(stderr, "SIM: open-ended write without auto CMD12\n"); exit(2); }
         xfer_read = (idx == 17 || idx == 18);
         if (!!(xfer & 0x10) != xfer_read) { fprintf(stderr, "SIM: direction mismatch\n"); exit(2); }
         xfer_multi = (idx == 18 || idx == 25);
@@ -149,6 +159,7 @@ static void finish_block(void)
             return;
         }
         if (!xfer_read && xfer_multi && opt_rcv && ++rcv_counter % opt_rcv == 0) {
+            if (predef_write && !opt_rcv_lost) { cstate = ST_TRAN; busy_until = 0; return; }   /* count reached: card done, still no TC */
             rcv_stuck = 1; buf_stale = 1;                /* lines idle, count 0, but no CMD12: card receiving */
             if (opt_rcv_lost) { memcpy(disk + (size_t)(cur_addr - 1) * 512, prev_block, 512); wr_ok--; }   /* last block never arrived */
             return;
@@ -233,7 +244,7 @@ static int run(const char *name)
 {
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
     cstate = ST_IDLE; app = 0; acmd41_count = 0; crc_counter = 0; hs = 0; buswidth = 1;
-    busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = wr_ok = 0; blocks_left = 0; rcv_stuck = 0; buf_stale = 0;
+    busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = wr_ok = 0; blocks_left = 0; rcv_stuck = 0; buf_stale = 0; predef_count = predef_write = 0;
     uint8_t *buf = malloc(128 * 512), *chk = malloc(128 * 512);
     for (int i = 0; i < CARD_BLOCKS * 512; i++) disk[i] = (uint8_t)(i * 7 + (i >> 9));
     printf("--- %s\n", name);
@@ -265,9 +276,12 @@ static int run(const char *name)
     if (opt_rcv_lost && h.ShortWrites == 0) { printf("FAIL lost last block not noticed\n"); return 1; }
     if (opt_drop_tc && h.TcSettled == 0) { printf("FAIL lost TC never settled by CMD13\n"); return 1; }
     if (opt_stuck && h.TcSettled != 0) { printf("FAIL unfinished write counted as done\n"); return 1; }
-    if (opt_rcv && !opt_rcv_lost && h.StopSent == 0) { printf("FAIL missing auto CMD12 never sent by the driver\n"); return 1; }
+    if (h.Cmd23 != (opt_no_cmd23 ? 2 : 1)) { printf("FAIL CMD23 state %u\n", h.Cmd23); return 1; }
+    if (!opt_no_cmd23 && (h.StopSent != 0 || h.Cmd23Writes == 0)) { printf("FAIL CMD23 writes %u, own CMD12 %u\n", h.Cmd23Writes, h.StopSent); return 1; }
+    if (opt_rcv && !opt_rcv_lost && !opt_no_cmd23 && h.TcSettled == 0) { printf("FAIL finished CMD23 write not settled\n"); return 1; }
+    if (opt_rcv && !opt_rcv_lost && opt_no_cmd23 && h.StopSent == 0) { printf("FAIL missing auto CMD12 never sent by the driver\n"); return 1; }
     if ((!opt_rcv || opt_rcv_lost) && h.StopSent != 0) { printf("FAIL CMD12 sent without a receiving card\n"); return 1; }
-    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u, own CMD12 %u, short %u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled, h.StopSent, h.ShortWrites);
+    printf("PASS (clock %u Hz, HS %d, speedlevel %u, errors %u, settled by CMD13 %u, own CMD12 %u, short %u, CMD23 %u/%u)\n", h.ClockHz, h.HighSpeed, h.SpeedLevel, h.ErrorCount, h.TcSettled, h.StopSent, h.ShortWrites, h.Cmd23, h.Cmd23Writes);
     return 0;
 }
 
@@ -284,9 +298,12 @@ int main(void)
     opt_drop_tc = 2; f |= run("busy 20 ms, transfer complete lost every 2nd write (CMD13 check)");
     opt_busy_us = 0; f |= run("transfer complete lost every 2nd write, card not busy");
     opt_drop_tc = 0; opt_stuck = 2; f |= run("controller wants one more block every 2nd multi-block write (abort, retry)");
-    opt_stuck = 0; opt_rcv = 2; f |= run("auto CMD12 missing every 2nd multi-block write (driver sends it)");
-    opt_rcv_lost = 1; f |= run("auto CMD12 missing and the last block lost (ACMD22 catches it)");
-    opt_rcv = 0; opt_rcv_lost = 0;
+    opt_stuck = 0; opt_rcv = 2; f |= run("CMD23: write over but no transfer complete every 2nd multi-block write");
+    opt_rcv_lost = 1; f |= run("CMD23: last block lost every 2nd multi-block write (card still receiving)");
+    opt_no_cmd23 = 1; opt_rcv_lost = 0; f |= run("no CMD23: auto CMD12 missing every 2nd multi-block write (driver sends it)");
+    opt_rcv_lost = 1; f |= run("no CMD23: auto CMD12 missing and the last block lost (ACMD22 catches it)");
+    opt_rcv = 0; opt_rcv_lost = 0; opt_drop_tc = 2; f |= run("no CMD23: transfer complete lost every 2nd write");
+    opt_drop_tc = 0; opt_no_cmd23 = 0;
     printf(f ? "SOME TESTS FAILED\n" : "ALL TESTS PASSED\n");
     return f;
 }

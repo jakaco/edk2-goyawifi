@@ -737,8 +737,8 @@ static BOOLEAN GoyaStartIo_(PVOID Ext, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_SHUTDOWN:
-        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u settled by CMD13 (%u with our own CMD12), %u short by ACMD22, card errors %u, speed level %u, %u kHz\n",
-               X->Ios, X->Fails, X->Deferred, X->Sd.TcSettled, X->Sd.StopSent, X->Sd.ShortWrites, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
+        SD_LOG("goyasdhc: shutdown: %u requests, %u failed, %u slow-path, %u settled by CMD13 (%u with our own CMD12), %u short, CMD23 %u (%u writes), short reads without TC %u, card errors %u, speed level %u, %u kHz\n",
+               X->Ios, X->Fails, X->Deferred, X->Sd.TcSettled, X->Sd.StopSent, X->Sd.ShortWrites, X->Sd.Cmd23, X->Sd.Cmd23Writes, X->Sd.SmallNoTc, X->Sd.ErrorCount, X->Sd.SpeedLevel, X->Sd.ClockHz / 1000);
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         break;
     case SRB_FUNCTION_FLUSH:

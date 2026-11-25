@@ -117,9 +117,15 @@ typedef struct _SD_HOST {
     ULONG     TcSettled;          /* writes found over by CMD13 although transfer complete never came */
     ULONG     StopSent;           /* of those, writes where the auto CMD12 was missing and the driver sent it */
     ULONG     ShortWrites;        /* writes where ACMD22 showed blocks missing (or could not be asked): re-sent */
+    UCHAR     Cmd23;              /* CMD23 (SET_BLOCK_COUNT) for writes: 0 untried, 1 works, 2 card says no */
+    BOOLEAN   XPreDef;            /* current write was announced with CMD23 (no auto CMD12) */
+    ULONG     Cmd23Writes;        /* multi-block writes sent with CMD23 */
+    ULONG     SmallNoTc;          /* short reads (CMD6, ACMD22) taken without transfer complete */
 } SD_HOST;
 
 typedef enum { SD_OK = 0, SD_ETIMEOUT, SD_ECMD, SD_EDATA, SD_ECARD, SD_ENOCARD, SD_EPARAM, SD_PENDING } SD_STATUS;
+
+static BOOLEAN SdSetBlockCount(SD_HOST *c, ULONG count);
 
 static ULONG SdCsdBits(const ULONG *r, ULONG lsb, ULONG len)
 {
@@ -321,13 +327,30 @@ static SD_STATUS SdPio(SD_HOST *c, BOOLEAN read, PUCHAR buf, ULONG blocks, ULONG
 {
     ULONG b, s, words = blksz / 4;
     ULONG need = read ? INT_BRR : INT_BWR;
+    BOOLEAN small = read && blksz < SD_BLOCK;
 
     for (b = 0; b < blocks; b++) {
         s = SdWaitInt(c, need, 1000000);
         if (!(s & need) || (s & INT_ERRMASK)) { c->LastIntSts = s; return s ? SD_EDATA : SD_ETIMEOUT; }
+        if (small) {
+            /* Runs 10/11: the 4 bytes of ACMD22 read at buffer-ready were old buffer contents. A
+               64-byte block takes ~10 us at 13 MHz; give it 1 ms to land before reading it. */
+            SD_STALL(1000);
+        }
         SD_WR32(c, SDHC_INTSTS, need);
         if (read) SdFifoIn(c, buf, words); else SdFifoOut(c, buf, words);
         buf += words * 4;
+    }
+    if (small) {
+        /* The 64-byte CMD6 status read often never got transfer complete (runs 8 and 11 came up at
+           13 MHz). Every byte is in hand by now and callers check the content, so a missing
+           transfer complete only ends the transaction (data-line reset). */
+        s = SdWaitInt(c, INT_TC, 100000);
+        c->LastIntSts = s;
+        if (s & INT_ERRMASK) return SD_EDATA;
+        if (s & INT_TC) SD_WR32(c, SDHC_INTSTS, INT_TC);
+        else { c->SmallNoTc++; SdReset(c, 0x04); }
+        return SD_OK;
     }
     s = SdWaitInt(c, INT_TC, 2000000);              /* writes: includes card programming busy */
     c->LastIntSts = s;
@@ -361,8 +384,8 @@ static BOOLEAN SdSwitchHighSpeed(SD_HOST *c)
                 SdRecover(c);
                 break;
             }
-            if ((st[16] & 0x0F) != 1) {
-                SD_LOG("goyasdhc: CMD6 mode %u: function group 1 reports %02x, attempt %u\n", mode, st[16], attempt);
+            if ((st[16] & 0x0F) != 1 || !(st[13] & 0x02)) {
+                SD_LOG("goyasdhc: CMD6 mode %u: function group 1 reports %02x (support %02x), attempt %u\n", mode, st[16], st[13], attempt);
                 break;
             }
         }
@@ -456,7 +479,10 @@ static SD_STATUS SdXferOnce(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count
     ULONG idx;
     SD_STATUS st;
 
-    if (count > 1) { xfer |= XFER_MULTI | XFER_BLKCNT_EN | XFER_ACMD12; idx = read ? 18 : 25; }
+    if (count > 1) {
+        xfer |= XFER_MULTI | XFER_BLKCNT_EN; idx = read ? 18 : 25;
+        if (read || !SdSetBlockCount(c, count)) xfer |= XFER_ACMD12;
+    }
     else idx = read ? 17 : 24;
 
     SD_WR16(c, SDHC_BLKSIZE, 0x7000 | SD_BLOCK);
@@ -470,6 +496,31 @@ static SD_STATUS SdXferOnce(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG count
         SdWaitTran(c);
     }
     return st;
+}
+
+/* CMD23 (SET_BLOCK_COUNT) before a multi-block write. Runs 7-11: about 1 in 10 multi-block writes
+   ended with every block sent but no automatic CMD12 from the controller, the card waiting for more
+   data, and no transfer complete. With the count announced the card needs no stop command and goes
+   back to the transfer state only once every block has arrived - so the card's own state answers
+   whether the write is complete. A card without CMD23 does not answer it; then auto CMD12 as before. */
+static BOOLEAN SdSetBlockCount(SD_HOST *c, ULONG count)
+{
+    ULONG r = 0;
+    SD_STATUS st;
+
+    if (c->Cmd23 == 2) return FALSE;
+    st = SdCmd(c, 23, count, R_R1, 0, &r);
+    if (st == SD_OK && !(r & R1_ERRORS)) {
+        if (c->Cmd23 == 0) SD_LOG("goyasdhc: CMD23 accepted (card status %08x): multi-block writes announce their length\n", r);
+        c->Cmd23 = 1;
+        c->Cmd23Writes++;
+        return TRUE;
+    }
+    SD_LOG("goyasdhc: CMD23 failed (%d, card status %08x, INTSTS %08x)%s\n", st, r, c->LastIntSts,
+           c->Cmd23 == 0 ? ": card without CMD23, writes use auto CMD12" : "");
+    if (c->Cmd23 == 0) c->Cmd23 = 2;
+    SdWaitTran(c);
+    return FALSE;
 }
 
 /* ---- asynchronous transfer: begin, then poll until done ------------------------------------------
@@ -497,7 +548,11 @@ static SD_STATUS SdXferBegin(SD_HOST *c, BOOLEAN read, ULONGLONG lba, ULONG coun
     SD_STATUS st;
 
     if (!c->Ready || count == 0 || count > 0xFFFF || lba + count > c->Blocks) return SD_EPARAM;
-    if (count > 1) { xfer |= XFER_MULTI | XFER_BLKCNT_EN | XFER_ACMD12; idx = read ? 18 : 25; }
+    c->XPreDef = FALSE;
+    if (count > 1) {
+        xfer |= XFER_MULTI | XFER_BLKCNT_EN; idx = read ? 18 : 25;
+        if (!read && SdSetBlockCount(c, count)) c->XPreDef = TRUE; else xfer |= XFER_ACMD12;
+    }
     else idx = read ? 17 : 24;
     SD_WR16(c, SDHC_BLKSIZE, 0x7000 | SD_BLOCK);
     SD_WR16(c, SDHC_BLKCOUNT, (USHORT)count);
@@ -562,6 +617,13 @@ static int SdWriteSettled(SD_HOST *c)
                p, st, r, R1_STATE(r));
     if (st != SD_OK) return 2;
     if (R1_STATE(r) == R1_STATE_PRG) return 0;            /* still programming */
+    if (c->XPreDef) {
+        /* Length announced with CMD23: the card leaves the receive state only after the last block,
+           so transfer state, ready, no error bits = every block stored. Still receiving = a block
+           never arrived: abort and re-send. */
+        if (R1_STATE(r) != R1_STATE_TRAN || !(r & R1_READY) || (r & R1_ERRORS)) { c->ShortWrites++; return 2; }
+        return 1;
+    }
     /* Run 8: in every stall the card was still receiving (state 6) - all blocks sent, but the
        controller never sent the automatic CMD12, so the card waits for more data and no transfer
        complete comes. Send the stop ourselves; the write counts as done only if the card then
