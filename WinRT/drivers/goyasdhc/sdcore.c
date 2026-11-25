@@ -516,6 +516,11 @@ static BOOLEAN SdWrittenBlocks(SD_HOST *c, ULONG *n)
     UCHAR *b = (UCHAR *)&w;                           /* word-aligned for the FIFO */
     SD_STATUS e;
 
+    /* Run 10: without this the 4 bytes read back were leftovers of the stalled write in the
+       controller's buffer (0x69000000, 0xFFFFFFFF, file data), never a count. The controller's data
+       side still thinks the write is going on; a data-line reset ends that and empties the buffer. */
+    SD_WR32(c, SDHC_INTSTS, 0xFFFFFFFF);
+    if (!SdReset(c, 0x04)) return FALSE;
     if (SdCmd(c, 55, c->Rca << 16, R_R1, 0, &r) != SD_OK || !(r & 0x20)) return FALSE;
     SD_WR16(c, SDHC_BLKSIZE, 0x7000 | 4);
     SD_WR16(c, SDHC_BLKCOUNT, 1);
@@ -533,7 +538,7 @@ static int SdWriteCounted(SD_HOST *c, const char *how)
     ULONG n = 0;
     BOOLEAN ok = SdWrittenBlocks(c, &n);
     if (!ok || n != c->XCount || c->TcSettled < 10)
-        SD_LOG("goyasdhc: %s: card stored %u of %u blocks%s\n", how, n, c->XCount, ok ? "" : " (ACMD22 failed)");
+        SD_LOG("goyasdhc: %s: card stored %u of %u blocks (%08x)%s\n", how, n, c->XCount, n, ok ? "" : " (ACMD22 failed)");
     if (!ok || n != c->XCount) { c->ShortWrites++; return 2; }
     return 1;
 }

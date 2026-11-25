@@ -47,6 +47,7 @@ static void raise(uint32_t bits)
 }
 
 static int rcv_stuck;                        /* opt_rcv: the card is really still in the receive state */
+static int buf_stale;                        /* run 10: after a stalled write the controller buffer keeps old bytes until a DAT reset */
 static uint32_t cardstatus(void)
 {
     int st = cstate == ST_DATA || cstate == ST_RCV ? ST_TRAN : cstate;
@@ -91,6 +92,7 @@ static void docmd(uint16_t cmd)
         case 22: if (cstate != ST_TRAN) { ok = 0; break; }
                  if ((rd16raw(0x04) & 0xFFF) != 4) { fprintf(stderr, "SIM: ACMD22 blksize\n"); exit(2); }
                  fifo[0] = wr_ok >> 24; fifo[1] = wr_ok >> 16; fifo[2] = wr_ok >> 8; fifo[3] = wr_ok;
+                 if (buf_stale) { fifo[0] = 0x69; fifo[1] = fifo[2] = fifo[3] = 0; }   /* leftovers, not the count */
                  wr32raw(0x10, cardstatus() | 0x20); raise(1); fifo_pos = 0; fifo_len = 4; blocks_left = 1; xfer_read = 1; raise(0x20); return;
         case 6:  if (cstate != ST_TRAN) { ok = 0; break; } buswidth = (arg & 3) == 2 ? 4 : 1; resp = cardstatus(); goto out;
         default: ok = 0; goto out;
@@ -147,7 +149,7 @@ static void finish_block(void)
             return;
         }
         if (!xfer_read && xfer_multi && opt_rcv && ++rcv_counter % opt_rcv == 0) {
-            rcv_stuck = 1;                               /* lines idle, count 0, but no CMD12: card receiving */
+            rcv_stuck = 1; buf_stale = 1;                /* lines idle, count 0, but no CMD12: card receiving */
             if (opt_rcv_lost) { memcpy(disk + (size_t)(cur_addr - 1) * 512, prev_block, 512); wr_ok--; }   /* last block never arrived */
             return;
         }
@@ -193,7 +195,7 @@ static void hw_wr(int o, int sz, uint32_t v)
         return;
     }
     if (o == 0x30 && sz == 4) { uint32_t st = rd32raw(0x30) & ~v; if (!(st & 0xFFFF0000)) st &= ~0x8000; wr32raw(0x30, st); return; }
-    if (o == 0x2F) { if (v & 1) { memset(R, 0, 0x40); } if (v & 6) { wr32raw(0x30, 0); } if (v & 5) blocks_left = 0; return; }   /* DAT reset ends the data transaction */
+    if (o == 0x2F) { if (v & 1) { memset(R, 0, 0x40); } if (v & 6) { wr32raw(0x30, 0); } if (v & 5) blocks_left = 0; if (v & 5) buf_stale = 0; return; }   /* DAT reset ends the data transaction */
     if (sz == 1) R[o] = v; else if (sz == 2) wr16raw(o, v); else wr32raw(o, v);
     if (o == 0x0E && sz == 2) docmd(v);
 }
@@ -231,7 +233,7 @@ static int run(const char *name)
 {
     SD_HOST h; memset(&h, 0, sizeof h); memset(R, 0, sizeof R);
     cstate = ST_IDLE; app = 0; acmd41_count = 0; crc_counter = 0; hs = 0; buswidth = 1;
-    busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = wr_ok = 0; blocks_left = 0; rcv_stuck = 0;
+    busy_until = dat_busy_until = 0; tc_counter = stuck_counter = rcv_counter = wr_ok = 0; blocks_left = 0; rcv_stuck = 0; buf_stale = 0;
     uint8_t *buf = malloc(128 * 512), *chk = malloc(128 * 512);
     for (int i = 0; i < CARD_BLOCKS * 512; i++) disk[i] = (uint8_t)(i * 7 + (i >> 9));
     printf("--- %s\n", name);
