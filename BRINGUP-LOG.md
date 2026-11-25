@@ -228,6 +228,32 @@ table.
 
 ---
 
+## 13. Wi-Fi: the Surface RT Marvell driver on our own SDIO bus
+
+The Surface RT's Wi-Fi was a Marvell 88W8797 on SDIO with `mwls97w8arm.sys` (14.62.17215.91 ARM, from
+DriversStore/mwls97); our module is the 88W8777 from the same family. Findings from the binary:
+- It is Marvell's MLAN driver (the same code base as the vendor Linux driver `sd8xxx`/`mlan` for the
+  8777, which treats the 8777 as an 8787 with another firmware file). No NEON/VFP (its memcpy is integer
+  only), imports only ntoskrnl/HAL/NDIS: it fits the 8520 kernel.
+- Firmware: `NdisOpenFile("mv14sxx97.bin")`, the built-in 8797 image only as fallback. The SM-T110
+  `sd8777_uapsta.bin` (w8777-A0 FP66 14.66.33.p46, goyawifi vendor blobs) installed under that name.
+- SD bus contract of its statically linked sdbus.lib: interface GUID, sizes, IOCTL 0x43073, the 'SDIC'
+  context signature, the properties and commands it uses (goyasdio README).
+
+New:
+- **goyasdio.sys** (WDM SDIO bus driver, ACPI\MRVL0009 on SDH2): card init, CMD52/CMD53 in PIO, child PDOs
+  `SD\VID_02DF&PID_9131&FN_1` / `PID_9132&FN_2`, the SD bus interface, card interrupt polled at 1 ms.
+  `sdiocore.c` tested by `tools/sdiosim` (CI).
+- **goyawifi** package built in CI by `tools/make-goyawifi-pkg.py` from pinned, hash-checked inputs.
+- DSDT `Device (SDH2)`; SDH1's register range trimmed to 0x800 (it overlapped SDH2).
+- Firmware: MMC2 pins, LDO10 3.3 V, WLAN_PD (GPIO51) released after 10 ms (Linux wifi-pwrseq).
+
+Not tested on hardware yet. Open risks: the FP62 MLAN with the FP66 8777 firmware (multi-port aggregation
+gave Linux trouble on this chip), no calibration data download (the stock Android driver did not use one
+either), and the 1 ms polling instead of an interrupt.
+
+---
+
 ## Next
 
 * **goyasdhc**: CMD23 writes, 41.6 MHz and SDMA done (sections 11, 12).
@@ -240,7 +266,7 @@ table.
 * **Charger driver**: under Windows the tablet does not charge (the SMB328
   watchdog stops charging after the firmware hands over).
 * Power key and screen brightness; the second CPU core (firmware support for
-  Windows' core start-up); battery percentage; Wi-Fi as a long-term goal.
+  Windows' core start-up); battery percentage; Bluetooth (SDIO function 2 is enumerated).
 * Turn off hibernation / Fast Startup on the Windows RT card (goyasdhc's
   hibernate path is untested).
 * Still to confirm: goyabug's test stop, the on-screen keyboard (goyaosk) with

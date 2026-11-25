@@ -261,11 +261,19 @@ branch). WinPE cards: `WinRT/winpe/make-goya-sd.cmd`; full install:
   fused off on this Cortex-A9. WinKernelFixupDxe now clears the flag that
   makes them do it (third patch site). Fix not yet confirmed on hardware.
 
+* **Wi-Fi (goyasdio + goyawifi), untested on hardware**: goyasdio is an SDIO
+  bus driver for SDH2 (DSDT `MRVL0009`) that enumerates the Marvell 88W8777 and
+  gives its WLAN function the Windows SD bus interface; goyawifi is the Surface
+  RT Marvell driver (`mwls97w8arm.sys` 14.62.17215.91, same MLAN code base)
+  with the SM-T110 `sd8777_uapsta.bin` installed as its firmware file. The
+  firmware powers the module (LDO10, WLAN_PD GPIO51). Details:
+  [WinRT/drivers/goyasdio/README.md](WinRT/drivers/goyasdio/README.md).
+
 **Not available**
 
 * Second core in Windows (CPU1 disabled in the MADT).
 * Charging and battery in Windows (no SMB328 / fuel-gauge driver).
-* Wi-Fi, audio, sensors, camera, USB, GPU acceleration (no drivers).
+* Bluetooth, audio, sensors, camera, USB, GPU acceleration (no drivers).
 
 ## Second core and USB: what to look for
 

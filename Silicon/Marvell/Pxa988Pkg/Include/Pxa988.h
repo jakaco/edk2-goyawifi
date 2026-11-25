@@ -88,6 +88,9 @@
 #define GPIO_BANK(n)                (PXA988_GPIO_BASE + (((n) / 32) < 3 ? (((n) / 32) << 2) : (0x100 + ((((n) / 32) - 3) << 2))))
 #define GPIO_GPLR                   0x00
 #define GPIO_GPDR                   0x0C
+#define GPIO_GPSR                   0x18
+#define GPIO_GPCR                   0x24
+#define GPIO_GSDR                   0x54
 #define GPIO_GCDR                   0x60
 
 #define PXA988_MFPR_BASE            0xD401E000
@@ -102,6 +105,11 @@
 #define MFPR_GPIO2                  0x00E4
 #define MFPR_GPIO11                 0x0108
 #define MFPR_GPIO13                 0x0110
+#define MFPR_GPIO37                 0x0170      // GPIO37..42 = MMC2 DAT3..DAT0, CMD, CLK (AF1): SDIO Wi-Fi
+#define MFPR_GPIO42                 0x0184
+#define MFPR_GPIO51                 0x01A8      // WLAN_PD (AF0)
+#define MFPR_GPIO84                 0x01FC      // WLAN_WU_HOST (AF0)
+#define GOYAWIFI_WLAN_PD_GPIO       51          // high = module powered (Linux wifi-pwrseq reset-gpios, active low)
 #define   MFPR_PULL_MASK            (BIT15 | BIT14 | BIT13)
 #define   MFPR_PULL_UP              (BIT15 | BIT14)
 
@@ -144,6 +152,10 @@
 #define   PM822_LDO1_2V8            4
 #define   PM800_LDO4_EN             BIT3        // v_sd_3v3  (microSD vmmc)
 #define   PM800_LDO5_EN             BIT4        // v_mmc_3v3 (microSD vqmmc)
+#define PM800_LDO_ENA1_2            0x52
+#define   PM800_LDO10_EN            BIT1        // v_wib_3v3 (Marvell 88W8777 Wi-Fi/BT module)
+#define PM800_LDO10_VOUT            0x13        // low nibble: 88PM822 LDO3..17 table, 15 = 3.3 V
+#define   PM822_LDO_3V3             15
 
 //
 // Legacy ICU: its global IRQ/FIQ outputs must be masked, peripheral IRQs

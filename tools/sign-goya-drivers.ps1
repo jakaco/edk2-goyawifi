@@ -71,6 +71,11 @@ try {
                    'CatalogVersion=1', 'HashAlgorithms=SHA1', 'CATATTR1=0x10010001:OSAttr:2:6.2', '',
                    '[CatalogFiles]', "<hash>$($inf.Name)=$($inf.Name)")
         foreach ($b in $bins) { $lines += "<hash>$($b.Name)=$($b.Name)" }
+        # other files the INF copies (goyawifi: the firmware mv14sxx97.bin) must be in the catalog too
+        $infText = Get-Content -Raw $inf.FullName
+        foreach ($x in Get-ChildItem -File | Where-Object { $_.Extension -notin '.inf', '.cat', '.cer', '.cdf', '.sys', '.dll', '.exe' }) {
+            if ($infText -match [regex]::Escape($x.Name)) { $lines += "<hash>$($x.Name)=$($x.Name)"; $bins += $x }
+        }
         Set-Content -Path $cdf -Value $lines -Encoding ASCII
         & $makecat -v $cdf | Out-Null
         if ($LASTEXITCODE -or -not (Test-Path "$name.cat")) { throw "makecat failed for $name" }

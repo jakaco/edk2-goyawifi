@@ -93,8 +93,22 @@ DefinitionBlock ("Dsdt.aml", "DSDT", 5, "SAMSNG", "GOYAWIFI", 0x00000001)
       // enable at 0; the interrupt is listed only because Windows 8.0 (build 8520) Storport fails
       // the adapter start with STATUS_NOT_FOUND when there is no interrupt resource.
       Name (_CRS, ResourceTemplate () {
-        Memory32Fixed (ReadWrite, 0xD4280000, 0x1000)
+        Memory32Fixed (ReadWrite, 0xD4280000, 0x800)      // 0x800: SDH2 (Wi-Fi) starts at 0xD4280800
         Memory32Fixed (ReadWrite, 0xD4282854, 0x8)
+        Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 71 }
+      })
+    }
+    // SDH2: SDIO controller of the Marvell 88W8777 Wi-Fi/Bluetooth module (Linux sdh2 0xD4280800,
+    // clock APMU SDH1 0xD4282858). Driven by goyasdio.sys, an SDIO bus driver that enumerates the module's
+    // functions (SD\VID_02DF&PID_9131 WLAN, PID_9132 Bluetooth). No _CID PNP0D40 on purpose (inbox
+    // sdbus.sys must not take it). Polled like SDH1: the shared interrupt is listed but never signalled.
+    // The firmware has powered the module (LDO10 3.3 V, WLAN_PD GPIO51 high) and set the MMC2 pins.
+    Device (SDH2) {
+      Name (_HID, "MRVL0009")
+      Name (_UID, 2)
+      Method (_STA) { Return (0xF) }
+      Name (_CRS, ResourceTemplate () {
+        Memory32Fixed (ReadWrite, 0xD4280800, 0x800)
         Interrupt (ResourceConsumer, Level, ActiveHigh, Shared) { 71 }
       })
     }

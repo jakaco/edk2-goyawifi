@@ -381,6 +381,53 @@ Pxa988SdPower (
   }
 }
 
+/**
+  Marvell 88W8777 Wi-Fi/Bluetooth module on SDH2 (Windows: goyasdio.sys). As the 4.19 DT has it:
+  MMC2 pins AF1, vmmc = LDO10 (v_wib_3v3) 3.3 V, mmc-pwrseq-simple with reset-gpios = GPIO51 active low
+  and post-power-on-delay 20 ms. The module is held in power-down while LDO10 comes up, then released.
+  EDK2 itself does not use SDH2 (PcdSdhciMask bit 1 clear).
+**/
+STATIC
+VOID
+GoyaWifiPower (
+  VOID
+  )
+{
+  CONST UINT32  PdBit  = 1U << (GOYAWIFI_WLAN_PD_GPIO % 32);
+  CONST UINTN   PdBank = GPIO_BANK (GOYAWIFI_WLAN_PD_GPIO);
+  UINTN         Off;
+  UINT8         Ena;
+  UINT8         Vout;
+
+  for (Off = MFPR_GPIO37; Off <= MFPR_GPIO42; Off += 4) {
+    MmioAndThenOr32 (PXA988_MFPR_BASE + Off, ~(UINT32)MFPR_AF_MASK, 1);
+  }
+  MmioAnd32 (PXA988_MFPR_BASE + MFPR_GPIO51, ~(UINT32)MFPR_AF_MASK);
+  MmioAnd32 (PXA988_MFPR_BASE + MFPR_GPIO84, ~(UINT32)MFPR_AF_MASK);
+
+  // WLAN_PD low (output) while the supply comes up
+  MmioWrite32 (PdBank + GPIO_GPCR, PdBit);
+  MmioWrite32 (PdBank + GPIO_GSDR, PdBit);
+
+  if (EFI_ERROR (Pm822Read (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_2, &Ena)) ||
+      EFI_ERROR (Pm822Read (PM822_POWER_I2C_ADDR, PM800_LDO10_VOUT, &Vout))) {
+    DEBUG ((DEBUG_ERROR, "Pxa988Sdhci: Wi-Fi: PMIC read failed, module left off\n"));
+    return;
+  }
+  if ((Vout & 0x0F) != PM822_LDO_3V3) {
+    Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO10_VOUT, (UINT8)((Vout & 0xF0) | PM822_LDO_3V3));
+  }
+  if ((Ena & PM800_LDO10_EN) == 0) {
+    Pm822Write (PM822_POWER_I2C_ADDR, PM800_LDO_ENA1_2, (UINT8)(Ena | PM800_LDO10_EN));
+  }
+  MicroSecondDelay (10000);
+
+  MmioWrite32 (PdBank + GPIO_GPSR, PdBit);     // release power-down
+  MicroSecondDelay (20000);                    // post-power-on-delay-ms = 20
+  DEBUG ((DEBUG_INFO, "Pxa988Sdhci: Wi-Fi module powered (LDO10 was %a, VOUT 0x%02x)\n",
+          (Ena & PM800_LDO10_EN) ? "on" : "off", Vout));
+}
+
 EFI_STATUS
 EFIAPI
 Pxa988SdhciInitialize (
@@ -398,6 +445,7 @@ Pxa988SdhciInitialize (
   if ((FixedPcdGet32 (PcdSdhciMask) & BIT0) != 0) {
     Pxa988SdPower ();
   }
+  GoyaWifiPower ();
 
   for (Index = 0; Index < ARRAY_SIZE (mSdhci); Index++) {
     if ((FixedPcdGet32 (PcdSdhciMask) & mSdhci[Index].MaskBit) == 0) {

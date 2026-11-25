@@ -8,6 +8,7 @@ on:
       - 'WinRT/goyaosk/**'
       - 'WinRT/goyacmp/**'
       - 'tools/sign-goya-drivers.ps1'
+      - 'tools/make-goyawifi-pkg.py'
       - '.github/workflows/goya-drivers.yml'
   workflow_dispatch:
 
@@ -17,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        driver: [goyagpio, goyai2c, goyatouch, goyakeys, goyapinmux, goyasdhc, goyabug, goyagpu]
+        driver: [goyagpio, goyai2c, goyatouch, goyakeys, goyapinmux, goyasdhc, goyabug, goyagpu, goyasdio]
         dir: [WinRT/drivers]
         include:
           - driver: HalExtMmpTimer
@@ -50,6 +51,7 @@ jobs:
           if "${{ matrix.driver }}"=="goyasdhc" set B=build-storport.cmd
           if "${{ matrix.driver }}"=="goyatouch" set B=build-wdm.cmd
           if "${{ matrix.driver }}"=="goyabug" set B=build-wdm.cmd
+          if "${{ matrix.driver }}"=="goyasdio" set B=build-wdm.cmd
           call WinRT\drivers\%B% ${{ matrix.driver }}
 
       - uses: actions/upload-artifact@v4
@@ -83,8 +85,28 @@ jobs:
           path: tools-out/*.exe
           if-no-files-found: error
 
+  goyawifi:
+    # Marvell 88W8777 Wi-Fi package: the Surface RT Marvell SDIO driver (14.62.17215.91 ARM) and the SM-T110
+    # sd8777 firmware, fetched at pinned commits and checked by SHA-256 in make-goyawifi-pkg.py
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: SDIO core simulator test
+        run: cc -O1 -Wall -o /tmp/sdiosim tools/sdiosim/sim.c && /tmp/sdiosim
+      - name: Fetch the Marvell driver and the 8777 firmware
+        run: |
+          git init -q /tmp/mwls97 && git -C /tmp/mwls97 fetch -q --depth 1 https://github.com/DriversStore/mwls97 4d40cd6ce58f27a86aa2f57dd217851d98a82096 && git -C /tmp/mwls97 checkout -q FETCH_HEAD
+          git init -q /tmp/vendor && git -C /tmp/vendor fetch -q --depth 1 https://github.com/samsung-goya/android_vendor_samsung_goyawifi be834799df3fba23d85cbb6f14a2a43e328dbaf6 && git -C /tmp/vendor checkout -q FETCH_HEAD
+      - name: Build the goyawifi package
+        run: python3 tools/make-goyawifi-pkg.py /tmp/mwls97 /tmp/vendor/proprietary/vendor/firmware/mrvl/sd8777_uapsta.bin wifi-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goyawifi-arm
+          path: wifi-out/*
+          if-no-files-found: error
+
   sign:
-    needs: [build, goyaosk]
+    needs: [build, goyaosk, goyawifi]
     runs-on: windows-2022
     permissions:
       contents: write
