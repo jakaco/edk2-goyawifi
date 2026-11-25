@@ -57,6 +57,26 @@ rem bench.tmp stays on the NTFS partition for the compare after the restart
 echo --- end %TIME% >> "%OUT%"
 :nobench
 
+rem ---- install.flag: put the goyasdhc package from .\install\ into the Windows RT install on the NTFS
+rem partition (System32\drivers\goyasdhc.sys, which the boot loads, and the copy staged for Windows
+rem setup in \goya\drivers so setup cannot bring the old one back). Each copy is byte-compared. ----
+if not exist "%~dp0install.flag" goto noinstall
+ren "%~dp0install.flag" install.done
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- install goyasdhc into %WIN% >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto noinstall)
+set DRV=%WIN%\Windows\System32\drivers
+if exist %DRV%\goyasdhc.sys if not exist %DRV%\goyasdhc.sys.old copy /b /y %DRV%\goyasdhc.sys %DRV%\goyasdhc.sys.old >nul
+copy /b /y "%~dp0install\goyasdhc.sys" %DRV%\goyasdhc.sys >> "%OUT%" 2>&1
+"%~dp0goyacmp.exe" "%~dp0install\goyasdhc.sys" %DRV%\goyasdhc.sys >> "%OUT%" 2>&1
+echo System32\drivers compare exit code %ERRORLEVEL% >> "%OUT%"
+if not exist %WIN%\goya\drivers goto noinstall
+call :stage sys
+call :stage inf
+call :stage cat
+:noinstall
+
 rem ---- twrp.flag next to this file: restart straight into TWRP (the firmware sees \goya\reboot-recovery) ----
 if not exist "%~dp0twrp.flag" goto :eof
 rem one-shot as well (the restart may come back to WinPE)
@@ -64,6 +84,13 @@ del "%~dp0twrp.flag"
 if not exist "%~d0\goya" mkdir "%~d0\goya"
 echo WinPE autorun > "%~d0\goya\reboot-recovery"
 wpeutil reboot
+goto :eof
+
+rem ---- :stage EXT - copy goyasdhc.EXT into \goya\drivers of the Windows partition and compare ----
+:stage
+copy /b /y "%~dp0install\goyasdhc.%1" %WIN%\goya\drivers\goyasdhc.%1 >> "%OUT%" 2>&1
+"%~dp0goyacmp.exe" "%~dp0install\goyasdhc.%1" %WIN%\goya\drivers\goyasdhc.%1 >> "%OUT%" 2>&1
+echo goya\drivers\goyasdhc.%1 compare exit code %ERRORLEVEL% >> "%OUT%"
 goto :eof
 
 rem ---- :compare NAME - byte compare of boot.wim and its NTFS copy with goyacmp.exe (WinPE has no fc.exe or script engine) ----
