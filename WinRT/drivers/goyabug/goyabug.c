@@ -476,6 +476,7 @@ static VOID Draw(PULONG fb)
 #define MPMU_PHYS    0xD4050000ULL
 #define WDT_PHYS     0xD4080000ULL
 static volatile UCHAR *gMpmu, *gWdt;
+static ULONG gWdtWasArmed;
 #define MPMU(o) (*(volatile ULONG *)(gMpmu + (o)))
 #define WDT(o)  (*(volatile ULONG *)(gWdt + (o)))
 #define WDT_UNLOCK() (WDT(0x9C) = 0xBABA, WDT(0xA0) = 0xEB10)
@@ -680,6 +681,12 @@ static VOID LogInit(PDRIVER_OBJECT Driver)
     gLog = (volatile UCHAR *)MmMapIoSpace(pa, GOYALOG_SIZE, MmNonCached);
     pa.QuadPart = MPMU_PHYS; gMpmu = (volatile UCHAR *)MmMapIoSpace(pa, 0x2000, MmNonCached);
     pa.QuadPart = WDT_PHYS;  gWdt  = (volatile UCHAR *)MmMapIoSpace(pa, 0x1000, MmNonCached);
+    /* the firmware arms the watchdog at ExitBootServices as a hang guard for the early boot (second
+       core bring-up); goyabug loading means the boot got this far */
+    if (gWdt != NULL) {
+        gWdtWasArmed = WDT(0x64);
+        if (gWdtWasArmed & 1) { WDT_UNLOCK(); WDT(0x64) = 0; }
+    }
     if (gLog == NULL) return;
 
     {
@@ -734,6 +741,8 @@ static VOID LogInit(PDRIVER_OBJECT Driver)
         LogS(NT_SUCCESS(IoRegisterShutdownNotification(dev)) ? "shutdown notification on" : "shutdown notification FAILED");
     }
 
+    LBegin(&l); LS(&l, "firmware watchdog (WMER "); LH(&l, gWdtWasArmed, 2);
+    LS(&l, (gWdtWasArmed & 1) ? ") was armed, disarmed" : ") was not armed"); LEnd(&l);
     SmpProbe("at goyabug start");
 }
 

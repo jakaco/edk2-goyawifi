@@ -236,6 +236,100 @@ Cpu1Stop (
   Log ("CPU1 held in reset\n");
 }
 
+//
+// Hang guard while CPU1 is parked for the OS: the AP watchdog is armed at
+// ExitBootServices for about WDT_GUARD_SECONDS, and goyabug (an early boot
+// driver) disarms it when it loads. A boot that hangs before that ends in a
+// watchdog reset, which keeps the DRAM, so this driver can report what CPU1
+// did and goyalog can save the Windows log. The tick rate is measured here.
+//
+#define WDT_GUARD_SECONDS  240
+
+STATIC UINT32     mWdtTicksPerSecond;
+STATIC EFI_EVENT  mWdtEvent;
+
+STATIC
+VOID
+WdtUnlock (
+  VOID
+  )
+{
+  MmioWrite32 (WDT_WFAR, 0xBABA);
+  MmioWrite32 (WDT_WSAR, 0xEB10);
+}
+
+STATIC
+VOID
+WdtMeasure (
+  VOID
+  )
+{
+  UINT32  V0;
+  UINT32  V1;
+
+  MmioWrite32 (MPMU_WDTPCR, 0x7);           // reset + enable the WDT clock
+  MmioRead32 (MPMU_WDTPCR);
+  MmioWrite32 (MPMU_WDTPCR, 0x3);
+  MmioRead32 (MPMU_WDTPCR);
+  WdtUnlock ();
+  MmioWrite32 (WDT_WSR, 0);
+  WdtUnlock ();
+  MmioWrite32 (WDT_WMR, 0xFFFF);
+  WdtUnlock ();
+  MmioWrite32 (WDT_WMER, 0x1);              // count, no reset
+  V0 = MmioRead32 (WDT_WVR) & 0xFFFF;
+  MicroSecondDelay (250000);
+  V1 = MmioRead32 (WDT_WVR) & 0xFFFF;
+  WdtUnlock ();
+  MmioWrite32 (WDT_WMER, 0);
+  mWdtTicksPerSecond = ((V1 - V0) & 0xFFFF) * 4;
+  Log ("watchdog: %u ticks/s (WVR %u -> %u in 250 ms)\n", mWdtTicksPerSecond, V0, V1);
+}
+
+STATIC
+VOID
+EFIAPI
+WdtArmAtExitBootServices (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  UINT32  Ticks;
+
+  Ticks = mWdtTicksPerSecond * WDT_GUARD_SECONDS;
+  if (Ticks > 0xFF00) {
+    Ticks = 0xFF00;
+  }
+
+  WdtUnlock ();
+  MmioWrite32 (WDT_WSR, 0);
+  WdtUnlock ();
+  MmioWrite32 (WDT_WMR, (MmioRead32 (WDT_WVR) + Ticks) & 0xFFFF);
+  WdtUnlock ();
+  MmioWrite32 (WDT_WMER, 0x3);              // enable, reset on match
+  MmioOr32 (MPMU_APRR, MPMU_APRR_WDTR);
+}
+
+STATIC
+VOID
+WdtGuardSetup (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  UINT32      Seconds;
+
+  WdtMeasure ();
+  if ((mWdtTicksPerSecond < 1) || (mWdtTicksPerSecond > 0xFF00 / 30)) {
+    Log ("watchdog: tick rate unusable, no hang guard\n");
+    return;
+  }
+
+  Seconds = MIN (WDT_GUARD_SECONDS, 0xFF00 / mWdtTicksPerSecond);
+  Status  = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, WdtArmAtExitBootServices, NULL, &gEfiEventExitBootServicesGuid, &mWdtEvent);
+  Log ("watchdog: hang guard %u s from ExitBootServices (goyabug disarms it): %r\n", Seconds, Status);
+}
+
 STATIC
 VOID
 EFIAPI
@@ -473,6 +567,7 @@ Pxa988SmpInitialize (
   if (Parked) {
     mParking.ParkedAddress[0] = (UINT64)(UINTN)mPages;
     mParking.ParkedAddress[1] = (UINT64)(UINTN)mPage;
+    WdtGuardSetup ();
   }
 
 Publish:
