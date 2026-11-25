@@ -99,7 +99,8 @@ assert run(mu) == WFI, 'not sleeping in WFI'
 assert rd(mu, MB + 0x24) == 3, 'not parked for the OS: state %u' % rd(mu, MB + 0x24)
 assert rd(mu, PAGE + 0x0) == 0xFFFFFFFF, 'ProcessorId %#x' % rd(mu, PAGE)
 assert rd(mu, PAGE + 0x8) == 0 and rd(mu, PAGE + 0xc) == 0, 'JumpAddress not cleared'
-assert rd(mu, GICC + 0x04) == 0xF0, 'GICC_PMR %#x' % rd(mu, GICC + 4)
+assert rd(mu, GICC + 0x04) == 0x08, 'GICC_PMR %#x' % rd(mu, GICC + 4)
+assert all(rd(mu, GICD + 0x400 + 4 * i) == 0 for i in range(4)), 'SGI priorities not 0'
 assert rd(mu, GICC + 0x00) == 0x3, 'GICC_CTLR %#x' % rd(mu, GICC)
 assert rd(mu, GICD + 0x100) == 0xFFFF, 'GICD_ISENABLER0 %#x' % rd(mu, GICD + 0x100)
 print('parked for the OS: ProcessorId=%#x GICC_CTLR=%#x PMR=%#x' % (rd(mu, PAGE), rd(mu, GICC), rd(mu, GICC + 4)))
@@ -118,6 +119,13 @@ wr(mu, GICC + 0x0C, 1023)
 assert run(mu) == WFI
 assert rd(mu, GICC + 0x10) == 0, 'spurious interrupt was ended'
 print('spurious wake-up ok')
+
+# a Windows interrupt (SPI 69) that got through anyway: ended and made pending again for CPU0
+wr(mu, GICC + 0x0C, 69)
+assert run(mu) == WFI
+assert rd(mu, GICC + 0x10) == 69, 'SPI not ended'
+assert rd(mu, GICD + 0x208) == 1 << 5, 'SPI not re-pended: ISPENDR2 %#x' % rd(mu, GICD + 0x208)
+print('stray SPI handed back ok')
 
 # the OS: JumpAddress first, then ProcessorId, then the SGI. Entry is Thumb:
 #   movs r0, #0x5a ; b .

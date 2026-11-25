@@ -234,6 +234,28 @@ move /y %WIN%\Windows\Panther\SetupInfo* "%~dp0setuplogs\blackboard\" >> "%OUT%"
 dir /a %WIN%\Windows\Panther >> "%OUT%" 2>&1
 :noresetsetup
 
+rem ---- cpudiag.flag: what the last Windows RT boot made of the processors: its processor devices
+rem (Enum\ACPI\ACPI0007) and processor settings, plus copies of its SYSTEM hive and System event
+rem log, into .\setuplogs\cpudiag\ (read-only for Windows). ----
+if not exist "%~dp0cpudiag.flag" goto nocpudiag
+move /y "%~dp0cpudiag.flag" "%~dp0cpudiag.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+if not exist "%~dp0setuplogs\cpudiag" mkdir "%~dp0setuplogs\cpudiag"
+set P=%~dp0setuplogs\cpudiag\cpudiag.txt
+echo === cpudiag %DATE% %TIME%, Windows %WIN% > "%P%"
+if not defined WIN goto nocpudiag
+copy /b /y %WIN%\Windows\System32\config\SYSTEM "%~dp0setuplogs\cpudiag\SYSTEM" >> "%P%" 2>&1
+copy /b /y %WIN%\Windows\System32\winevt\Logs\System.evtx "%~dp0setuplogs\cpudiag\System.evtx" >> "%P%" 2>&1
+reg load HKLM\GOYACPU %WIN%\Windows\System32\config\SYSTEM >> "%P%" 2>&1
+reg query HKLM\GOYACPU\ControlSet001\Enum\ACPI\ACPI0007 /s >> "%P%" 2>&1
+reg query "HKLM\GOYACPU\ControlSet001\Control\Session Manager\Kernel" >>"%P%" 2>&1
+reg query HKLM\GOYACPU\ControlSet001\Control\Processor >> "%P%" 2>&1
+reg unload HKLM\GOYACPU >> "%P%" 2>&1
+echo --- System log, errors and warnings, newest first >> "%P%"
+wevtutil qe "%~dp0setuplogs\cpudiag\System.evtx" /lf:true /q:"*[System[(Level<=3)]]" /f:text /c:80 /rd:true >> "%P%" 2>&1
+:nocpudiag
+
 rem ---- cpus.flag (1 or 2): how many CPUs Windows RT may use. 1 = bcdedit onecpu on (what the
 rem installer sets), 2 = onecpu removed, for firmware that leaves CPU1 waiting in its ACPI parking
 rem page (MADT CPU1 enabled). The entry is the one in winrt.flag / winrt.done, else {default}. ----

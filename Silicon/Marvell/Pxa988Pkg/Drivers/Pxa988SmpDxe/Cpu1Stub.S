@@ -51,6 +51,8 @@
 #define GICC_IAR      0x0C
 #define GICC_EOIR     0x10
 #define GICD_ISENABLER0 0x100       // relative to the GIC distributor 0xD1DFF000
+#define GICD_ISPENDR    0x200
+#define GICD_IPRIORITYR 0x400
 
   .arm
   .text
@@ -170,11 +172,21 @@ Pxa988Cpu1Park:
 Pxa988Cpu1OsPark:
   movw    r0, #0xE100
   movt    r0, #0xD1DF               // r0 = GIC CPU interface
-  movw    r2, #0xF000
-  movt    r2, #0xD1DF               // r2 = GIC distributor
+  movw    r11, #0xF000
+  movt    r11, #0xD1DF              // r11 = GIC distributor
   movw    r1, #0xFFFF
-  str     r1, [r2, #GICD_ISENABLER0] // SGIs (banked for this core; fixed on on the A9)
-  mov     r1, #0xF0
+  str     r1, [r11, #GICD_ISENABLER0] // SGIs (banked for this core; fixed on on the A9)
+  //
+  // Only SGIs may reach this core while it waits: give this core's (banked)
+  // SGI priorities the top priority 0 and open the mask just for that.
+  // Windows's own interrupts (lower priority) stay pending for CPU0.
+  //
+  mov     r1, #0
+  str     r1, [r11, #GICD_IPRIORITYR]
+  str     r1, [r11, #GICD_IPRIORITYR + 4]
+  str     r1, [r11, #GICD_IPRIORITYR + 8]
+  str     r1, [r11, #GICD_IPRIORITYR + 12]
+  mov     r1, #0x08
   str     r1, [r0, #GICC_PMR]
   ldr     r1, [r4, #MB_GICCCTLR]
   orr     r1, r1, #1
@@ -217,7 +229,18 @@ Pxa988Cpu1OsWait:
   ldr     r1, [r0, #GICC_IAR]
   ubfx    r3, r1, #0, #10
   cmp     r3, r10
-  strne   r1, [r0, #GICC_EOIR]
+  beq     3f                        // spurious: nothing acknowledged
+  str     r1, [r0, #GICC_EOIR]
+  cmp     r3, #32
+  blo     3f                        // an SGI: ours, done
+  // Not ours (should not pass the mask): make it pending again for CPU0
+  lsr     r1, r3, #5
+  and     r3, r3, #31
+  mov     r8, #1
+  lsl     r8, r8, r3
+  add     r1, r11, r1, lsl #2
+  str     r8, [r1, #GICD_ISPENDR]
+3:
   dsb
   b       Pxa988Cpu1OsLoop
 
