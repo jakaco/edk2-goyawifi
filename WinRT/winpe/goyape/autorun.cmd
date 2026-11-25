@@ -71,6 +71,18 @@ set DRV=%WIN%\Windows\System32\drivers
 for %%f in ("%~dp0install\*.sys") do call :instdrv %%~nf
 :noinstall
 
+rem ---- adddrv.flag: add every driver package in .\adddrv\ (NAME.inf + .sys + .cat) to the Windows RT
+rem install's driver store with DISM, for a device that has no driver yet (install.flag only replaces
+rem the files of drivers that are installed already). Windows installs it when it finds the device. ----
+if not exist "%~dp0adddrv.flag" goto noadddrv
+move /y "%~dp0adddrv.flag" "%~dp0adddrv.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- add driver packages from .\adddrv to %WIN% >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto noadddrv)
+for %%f in ("%~dp0adddrv\*.inf") do call :adddrv "%%f"
+:noadddrv
+
 rem ---- setuplogs.flag: copy Windows Setup's logs from the Windows RT partition to .\setuplogs\ ----
 if not exist "%~dp0setuplogs.flag" goto nosetuplogs
 move /y "%~dp0setuplogs.flag" "%~dp0setuplogs.done" >nul
@@ -248,6 +260,13 @@ del "%~dp0twrp.flag"
 if not exist "%~d0\goya" mkdir "%~d0\goya"
 echo WinPE autorun > "%~d0\goya\reboot-recovery"
 wpeutil reboot
+goto :eof
+
+rem ---- :adddrv INF - DISM /Add-Driver into the offline Windows RT install (see adddrv.flag) ----
+:adddrv
+echo -- %~nx1 >> "%OUT%"
+dism /English /Image:%WIN%\ /Add-Driver /Driver:%1 /ForceUnsigned /LogPath:"%~dp0adddrv-dism.log" >> "%OUT%" 2>&1
+echo %~nx1 dism exit code %ERRORLEVEL% >> "%OUT%"
 goto :eof
 
 rem ---- :instdrv NAME - install .\install\NAME.sys (see install.flag) ----
