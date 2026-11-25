@@ -20,8 +20,6 @@
 
 #define GB_TAG 'bBoG'
 
-__declspec(dllimport) ULONG __cdecl DbgPrint(const char *Format, ...);
-
 #define GPIO_PHYS   0xD4019000ULL
 #define GPIO_LEN    0x200
 #define MFPR_PHYS   0xD401E000ULL
