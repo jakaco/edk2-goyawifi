@@ -344,14 +344,37 @@ static NTSTATUS GsQueryId(PGS_PDO p, BUS_QUERY_ID_TYPE type, PWCHAR *out)
 
 /* ---- request processing (PASSIVE_LEVEL, bus lock taken here) ---- */
 
-/* Bring-up trace to the boot log (goyalog): the first GS_TRACE_REQS requests of every kind, then only
-   failures (below). Rejected IOCTLs and unhandled PnP requests are logged separately. */
-#define GS_TRACE_REQS 160
-static volatile LONG gTraceReqs, gTraceOther;
+/* Bring-up trace to the boot log (goyalog): up to GS_TRACE_REQS requests, then only failures (below).
+   The firmware download loop (CMD53 writes to the function 1 data port 0x10000 and the CMD52 polls of
+   its status 0x30 and length 0x40/0x41) is only shown for its first GS_TRACE_LOOP requests and then
+   counted, so what the driver does after the download still fits. Rejected IOCTLs and unhandled PnP
+   requests are logged separately. */
+#define GS_TRACE_REQS 400
+#define GS_TRACE_LOOP 40
+static volatile LONG gTraceReqs, gTraceOther, gTraceLoop, gTraceSkipped;
+
+static BOOLEAN GsIsDownloadLoop(PGS_REQUEST_PACKET r)
+{
+    ULONG a, addr;
+    if (r->RequestFunction != SDRF_DEVICE_COMMAND) return FALSE;
+    a = r->Parameters.DeviceCommand.Argument;
+    addr = (a >> 9) & 0x1FFFF;
+    if (((a >> 28) & 7) != 1) return FALSE;
+    if (r->Parameters.DeviceCommand.CmdDesc.Cmd == 53) return (a >> 31) && addr == 0x10000;
+    return !(a >> 31) && (addr == 0x30 || addr == 0x40 || addr == 0x41);
+}
 
 static VOID GsTraceReq(PGS_PDO p, PGS_REQUEST_PACKET r, NTSTATUS s)
 {
+    if (GsIsDownloadLoop(r) && InterlockedIncrement(&gTraceLoop) > GS_TRACE_LOOP) {
+        InterlockedIncrement(&gTraceSkipped);
+        return;
+    }
     if (InterlockedIncrement(&gTraceReqs) > GS_TRACE_REQS) return;
+    if (gTraceSkipped) {
+        DbgPrint("goyasdio: ... %d download-loop requests not shown (%d CMD53 so far, %u bus errors)\n",
+                 InterlockedExchange(&gTraceSkipped, 0), p->Fdo ? p->Fdo->Sd.Cmd53s : 0, p->Fdo ? p->Fdo->Sd.Errors : 0);
+    }
     if (r->RequestFunction == SDRF_DEVICE_COMMAND) {
         ULONG a = r->Parameters.DeviceCommand.Argument;
         UCHAR cmd = r->Parameters.DeviceCommand.CmdDesc.Cmd;
@@ -816,7 +839,8 @@ static NTSTATUS GsPdoPnp(PGS_PDO p, PIRP irp)
     }
     if (sp->MinorFunction == IRP_MN_START_DEVICE || sp->MinorFunction == IRP_MN_STOP_DEVICE ||
         sp->MinorFunction == IRP_MN_REMOVE_DEVICE || sp->MinorFunction == IRP_MN_SURPRISE_REMOVAL)
-        DbgPrint("goyasdio: f%u PnP minor %02x -> %08x\n", p->Fn, sp->MinorFunction, s);
+        DbgPrint("goyasdio: f%u PnP minor %02x -> %08x (%d download-loop requests not shown, %u CMD53, %u bus errors)\n",
+                 p->Fn, sp->MinorFunction, s, InterlockedExchange(&gTraceSkipped, 0), f ? f->Sd.Cmd53s : 0, f ? f->Sd.Errors : 0);
     irp->IoStatus.Status = s;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
     return s;
