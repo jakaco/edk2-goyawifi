@@ -150,7 +150,9 @@ typedef struct _DEV_EXT {
     BOOLEAN        Removed;
     ULONG          InitTries;
     LONG           LastX, LastY;
-    ULONG          Tick;            /* poll counter (POLL_MS each) */
+    ULONG          Tick;            /* time since the poll thread started, in POLL_MS units (not a poll count:
+                                       the wait lasts a whole system timer period, ~15.6 ms, or more) */
+    ULONG          NextInit;        /* Tick at which the next init try is due */
     ULONG          LastAlive;       /* Tick of the last sign of life from the chip */
     ULONG          LastProbe;       /* Tick of the last register probe by the watchdog */
     BOOLEAN        HbSeen;          /* the chip sent its periodic (heartbeat) interrupt since the last init */
@@ -179,7 +181,7 @@ static PULONG gClk;
 static PKEVENT gPwrEv;
 static HANDLE gPwrEvH;
 static volatile ULONG gPwr;
-static ULONG gNakRun, gPwrTick;
+static ULONG gNakRun, gPwrTick, gNextEvOpen;
 static BOOLEAN gPwrPending;
 
 /* extra status lines below all drivers' values: "5 <n> <value>", n = 2.. */
@@ -665,6 +667,7 @@ static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
         gPwr += 0x10000;                                            /* answered */
         TLOG(E, "goyabatt power-cycled the supply (%u)", (gPwr >> 16) & 0xFF);
         E->InitTries = 0;                                           /* back to fast retries */
+        E->NextInit = Tick;
     }
     if (st != STATUS_NO_SUCH_DEVICE) { gNakRun = 0; return; }
     gNakRun++;
@@ -681,12 +684,13 @@ static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
 static VOID PollStep(DEV_EXT *E, ULONG Tick)
 {
     E->Tick = Tick;
-    if (gPwrEv == NULL && Tick % 500 == 0) PowerEventOpen();
+    if (gPwrEv == NULL && (LONG)(Tick - gNextEvOpen) >= 0) { gNextEvOpen = Tick + 5000 / POLL_MS; PowerEventOpen(); }
     if (gPwrPending && !KeReadStateEvent(gPwrEv)) PowerCycleCheck(E, STATUS_SUCCESS, Tick);
     if (!E->Initialized) {
         /* every 0.5 s for the first 20 tries, then every 5 s (a missing chip costs CPU: polled I2C) */
-        if (Tick % (E->InitTries < 20 ? 50 : 500) == 0) {
+        if ((LONG)(Tick - E->NextInit) >= 0) {
             NTSTATUS st;
+            E->NextInit = Tick + (E->InitTries < 20 ? 500 : 5000) / POLL_MS;
             E->InitTries++;
             st = ZInitChip(E);
             gInit = (ULONG)st;
@@ -749,12 +753,14 @@ static VOID PollThread(PVOID Context)
     DEV_EXT *E = (DEV_EXT *)Context;
     LARGE_INTEGER period;
     ULONG tick = 0;
+    ULONGLONG start = KeQueryInterruptTime();
 
+    E->NextInit = 0;                                    /* the tick restarts with every thread */
     period.QuadPart = -10000LL * POLL_MS;
     while (KeWaitForSingleObject(&E->StopEvent, Executive, KernelMode, FALSE, &period) == STATUS_TIMEOUT) {
         __try { PollStep(E, tick); }
         __except (GoyaTraceFilter(GetExceptionInformation(), 0x01)) { E->Initialized = FALSE; }
-        tick++;
+        tick = (ULONG)((KeQueryInterruptTime() - start) / (10000ULL * POLL_MS));
     }
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
