@@ -344,6 +344,35 @@ static NTSTATUS GsQueryId(PGS_PDO p, BUS_QUERY_ID_TYPE type, PWCHAR *out)
 
 /* ---- request processing (PASSIVE_LEVEL, bus lock taken here) ---- */
 
+/* Bring-up trace to the boot log (goyalog): the first GS_TRACE_REQS requests of every kind, then only
+   failures (below). Rejected IOCTLs and unhandled PnP requests are logged separately. */
+#define GS_TRACE_REQS 160
+static volatile LONG gTraceReqs, gTraceOther;
+
+static VOID GsTraceReq(PGS_PDO p, PGS_REQUEST_PACKET r, NTSTATUS s)
+{
+    if (InterlockedIncrement(&gTraceReqs) > GS_TRACE_REQS) return;
+    if (r->RequestFunction == SDRF_DEVICE_COMMAND) {
+        ULONG a = r->Parameters.DeviceCommand.Argument;
+        UCHAR cmd = r->Parameters.DeviceCommand.CmdDesc.Cmd;
+        ULONG r5 = 0;
+        RtlCopyMemory(&r5, r->ResponseData, 4);
+        if (cmd == 52)
+            DbgPrint("goyasdio: f%u CMD52 %s fn%u 0x%05x = %02x -> %02x st %08x\n", p->Fn, (a >> 31) ? "W" : "R",
+                     (a >> 28) & 7, (a >> 9) & 0x1FFFF, a & 0xFF, r5 & 0xFF, s);
+        else
+            DbgPrint("goyasdio: f%u CMD%u %s fn%u 0x%05x %s count %u len %u st %08x\n", p->Fn, cmd, (a >> 31) ? "W" : "R",
+                     (a >> 28) & 7, (a >> 9) & 0x1FFFF, (a & (1UL << 27)) ? "blk" : "byte", a & 0x1FF,
+                     r->Parameters.DeviceCommand.Length, s);
+    } else {
+        ULONG v = 0, n = r->Parameters.GetSetProperty.Length;
+        if (r->Parameters.GetSetProperty.Buffer && n) RtlCopyMemory(&v, r->Parameters.GetSetProperty.Buffer, n < 4 ? n : 4);
+        DbgPrint("goyasdio: f%u %s property %u len %u value %x st %08x\n", p->Fn,
+                 r->RequestFunction == SDRF_GET_PROPERTY ? "get" : r->RequestFunction == SDRF_SET_PROPERTY ? "set" : "???",
+                 r->Parameters.GetSetProperty.Property, n, v, s);
+    }
+}
+
 static NTSTATUS GsStatus(SD_STATUS st)
 {
     switch (st) {
@@ -472,6 +501,7 @@ static NTSTATUS GsProcess(PGS_PDO p, PGS_REQUEST_PACKET r)
     }
     ExReleaseFastMutex(&f->BusLock);
     f->Requests++;
+    GsTraceReq(p, r, s);
     if (!NT_SUCCESS(s)) {
         f->ReqErrors++;
         if (f->ReqErrors <= 20)
@@ -759,6 +789,11 @@ static NTSTATUS GsPdoPnp(PGS_PDO p, PIRP irp)
             GsIfRef(&p->IfCtx);
             DbgPrint("goyasdio: SD bus interface (version %x) handed to function %u\n", i->Version, p->Fn);
             s = STATUS_SUCCESS;
+        } else if (InterlockedIncrement(&gTraceOther) <= 40) {
+            const GUID *g = sp->Parameters.QueryInterface.InterfaceType;
+            DbgPrint("goyasdio: f%u query interface {%08x-%04x-%04x-%02x%02x-...} size %u version %u: not ours\n", p->Fn,
+                     g->Data1, g->Data2, g->Data3, g->Data4[0], g->Data4[1], sp->Parameters.QueryInterface.Size,
+                     sp->Parameters.QueryInterface.Version);
         }
         break;
     case IRP_MN_QUERY_BUS_INFORMATION: {
@@ -774,9 +809,14 @@ static NTSTATUS GsPdoPnp(PGS_PDO p, PIRP irp)
     case IRP_MN_QUERY_PNP_DEVICE_STATE:
         s = STATUS_SUCCESS;
         break;
-    default:
-        break;                                     /* resources, usage notifications ...: status unchanged */
+    default:                                       /* resources, usage notifications ...: status unchanged */
+        if (InterlockedIncrement(&gTraceOther) <= 40)
+            DbgPrint("goyasdio: f%u PnP minor %02x not handled (status %08x)\n", p->Fn, sp->MinorFunction, s);
+        break;
     }
+    if (sp->MinorFunction == IRP_MN_START_DEVICE || sp->MinorFunction == IRP_MN_STOP_DEVICE ||
+        sp->MinorFunction == IRP_MN_REMOVE_DEVICE || sp->MinorFunction == IRP_MN_SURPRISE_REMOVAL)
+        DbgPrint("goyasdio: f%u PnP minor %02x -> %08x\n", p->Fn, sp->MinorFunction, s);
     irp->IoStatus.Status = s;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
     return s;
@@ -830,6 +870,10 @@ static NTSTATUS GsPdoInternalIoctl(PGS_PDO p, PIRP irp)
 
     if (sp->Parameters.DeviceIoControl.IoControlCode != GS_IOCTL_SD_SUBMIT_REQUEST || !r ||
         sp->Parameters.DeviceIoControl.InputBufferLength < sizeof(GS_REQUEST_PACKET)) {
+        if (InterlockedIncrement(&gTraceOther) <= 40)
+            DbgPrint("goyasdio: f%u rejected internal IOCTL %08x input %p len %u (want %08x, len >= %u)\n", p->Fn,
+                     sp->Parameters.DeviceIoControl.IoControlCode, r, sp->Parameters.DeviceIoControl.InputBufferLength,
+                     GS_IOCTL_SD_SUBMIT_REQUEST, (ULONG)sizeof(GS_REQUEST_PACKET));
         s = STATUS_INVALID_DEVICE_REQUEST;
     } else if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
         /* asynchronous submit from DISPATCH_LEVEL: do it in a work item */
@@ -1052,6 +1096,9 @@ static NTSTATUS GsDispatchOther(PDEVICE_OBJECT d, PIRP irp)
     if (c->IsFdo && sp->MajorFunction == IRP_MJ_SYSTEM_CONTROL) return GsPassDown((PGS_FDO)c, irp);
     s = (sp->MajorFunction == IRP_MJ_CREATE || sp->MajorFunction == IRP_MJ_CLOSE || sp->MajorFunction == IRP_MJ_CLEANUP)
         ? STATUS_SUCCESS : (sp->MajorFunction == IRP_MJ_SYSTEM_CONTROL ? irp->IoStatus.Status : STATUS_INVALID_DEVICE_REQUEST);
+    if (s == STATUS_INVALID_DEVICE_REQUEST && InterlockedIncrement(&gTraceOther) <= 40)
+        DbgPrint("goyasdio: %s got IRP major %02x minor %02x: rejected
+", c->IsFdo ? "bus" : "function", sp->MajorFunction, sp->MinorFunction);
     irp->IoStatus.Status = s;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
     return s;
