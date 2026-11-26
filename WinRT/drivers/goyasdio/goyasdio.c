@@ -373,9 +373,9 @@ static BOOLEAN GsIsDownloadLoop(PGS_REQUEST_PACKET r)
 NTSYSAPI PVOID NTAPI RtlPcToFileHeader(PVOID PcValue, PVOID *BaseOfImage);
 #define GW_LOG_RVA      0x11eba8
 #define GW_LOG_NAME_RVA 0x85984
-/* MLAN debug classes: MSG 1, FATAL 2, ERROR 4, CMND 0x10, EVENT 0x20, IOCTL 0x80, WARN 0x20000000, INFO 0x40000000
-   (not DATA, INTR, the hex-dump classes or ENTRY) */
-#define GW_LOG_MASK     0x600000B7
+/* MLAN debug classes: MSG 1, FATAL 2, ERROR 4, DATA 8, CMND 0x10, EVENT 0x20, IOCTL 0x80, WARN 0x20000000,
+   INFO 0x40000000 (not INTR, the hex-dump classes or ENTRY) */
+#define GW_LOG_MASK     0x600000BF
 static PUCHAR gWifiLog;
 static LONG gWifiLogSeen;
 static volatile LONG gWifiLogBusy;
@@ -424,9 +424,47 @@ static VOID GsWifiLogDump(VOID)
     InterlockedExchange(&gWifiLogBusy, 0);
 }
 
+/* Data ports (function 1, 0x10001..0x1FFFF: ports 1-15 and multi-port aggregation; port 0 at 0x10000 carries
+   commands and events): the first GS_TRACE_DATA transfers with their first 96 bytes, apart from the request
+   cap above, to see the data path (TxPD/RxPD, 802.3 header, EAPOL 0x888e) once a connection starts. */
+#define GS_TRACE_DATA 120
+static volatile LONG gTraceData;
+
+static VOID GsTraceData(PGS_PDO p, PGS_REQUEST_PACKET r, NTSTATUS s)
+{
+    ULONG a, addr, len, i, o, n;
+    PMDL mdl;
+    PUCHAR va;
+    static const char hd[] = "0123456789abcdef";
+    if (r->RequestFunction != SDRF_DEVICE_COMMAND || r->Parameters.DeviceCommand.CmdDesc.Cmd != 53) return;
+    a = r->Parameters.DeviceCommand.Argument;
+    addr = (a >> 9) & 0x1FFFF;
+    if (((a >> 28) & 7) != 1 || addr <= 0x10000 || !gTraceSawRead) return;
+    if (InterlockedIncrement(&gTraceData) > GS_TRACE_DATA) return;
+    len = r->Parameters.DeviceCommand.Length;
+    mdl = r->Parameters.DeviceCommand.Mdl;
+    va = (mdl && len) ? (PUCHAR)MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority) : NULL;
+    DbgPrint("goyasdio: f%u data %s port 0x%05x %s len %u st %08x\n", p->Fn, (a >> 31) ? "W" : "R", addr,
+             (a & (1UL << 27)) ? "blk" : "byte", len, s);
+    if (!va) return;
+    n = len < 96 ? len : 96;
+    for (o = 0; o < n; o += 32) {
+        char hex[3 * 32 + 1];
+        ULONG m = n - o < 32 ? n - o : 32;
+        for (i = 0; i < m; i++) {
+            hex[3 * i] = hd[va[o + i] >> 4];
+            hex[3 * i + 1] = hd[va[o + i] & 15];
+            hex[3 * i + 2] = ' ';
+        }
+        hex[3 * m] = 0;
+        DbgPrint("goyasdio:   +%02x %s\n", o, hex);
+    }
+}
+
 static VOID GsTraceReq(PGS_PDO p, PGS_REQUEST_PACKET r, NTSTATUS s)
 {
     GsWifiLogDump();
+    GsTraceData(p, r, s);
     if (GsIsDownloadLoop(r) && InterlockedIncrement(&gTraceLoop) > GS_TRACE_LOOP) {
         InterlockedIncrement(&gTraceSkipped);
         return;
