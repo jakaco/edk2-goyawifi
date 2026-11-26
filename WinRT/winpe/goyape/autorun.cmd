@@ -142,6 +142,30 @@ reg query "HKLM\GOYASW\Microsoft\Windows\CurrentVersion\RunOnce" >> "%OUT%" 2>&1
 reg unload HKLM\GOYASW >> "%OUT%" 2>&1
 :nopnpinst
 
+rem ---- wifireg.flag: one "name value" pair per line (DWORD, decimal or 0x hex), set in the installed
+rem Marvell 88W8777 Wi-Fi driver's key (Net class instance whose MatchingDeviceId has PID_9131) in the
+rem offline SYSTEM hive: the driver reads its settings from there, and re-running pnputil with an unchanged
+rem package would not rewrite them. The hive is copied to .\wifireg-SYSTEM.before first. ----
+if not exist "%~dp0wifireg.flag" goto nowifireg
+move /y "%~dp0wifireg.flag" "%~dp0wifireg.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- wifireg: Wi-Fi driver settings from wifireg.done on %WIN% >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto nowifireg)
+copy /b /y %WIN%\Windows\System32\config\SYSTEM "%~dp0wifireg-SYSTEM.before" >> "%OUT%" 2>&1
+if errorlevel 1 (echo hive backup failed, registry not changed >> "%OUT%" & goto nowifireg)
+reg load HKLM\GOYAREG %WIN%\Windows\System32\config\SYSTEM >> "%OUT%" 2>&1
+if errorlevel 1 (echo hive load failed >> "%OUT%" & goto nowifireg)
+set CS=1
+for /f "tokens=3" %%v in ('reg query HKLM\GOYAREG\Select /v Current ^| find "Current"') do set /a CS=%%v
+set CS=000%CS%
+set RK=HKLM\GOYAREG\ControlSet%CS:~-3%
+set WRN=0
+for /f "delims=" %%k in ('reg query "%RK%\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}" /s /f "PID_9131" /d ^| find "HKEY_"') do call :wifiregkey "%%k"
+if "%WRN%"=="0" echo no Net class key with PID_9131 found >> "%OUT%"
+reg unload HKLM\GOYAREG >> "%OUT%" 2>&1
+:nowifireg
+
 rem ---- setuplogs.flag: copy Windows Setup's logs from the Windows RT partition to .\setuplogs\ ----
 if not exist "%~dp0setuplogs.flag" goto nosetuplogs
 move /y "%~dp0setuplogs.flag" "%~dp0setuplogs.done" >nul
@@ -488,4 +512,13 @@ rem ---- :compare NAME - byte compare of boot.wim and its NTFS copy with goyacmp
 echo compare %1 start %TIME% >> "%OUT%"
 "%~dp0goyacmp.exe" "%~d0\sources\boot.wim" %WIN%\goya\bench.tmp >> "%OUT%" 2>&1
 echo compare %1 end   %TIME%  exit code %ERRORLEVEL% >> "%OUT%"
+goto :eof
+
+:wifiregkey
+set /a WRN+=1
+echo key %~1 >> "%OUT%"
+for /f "usebackq eol=; tokens=1,2" %%a in ("%~dp0wifireg.done") do (
+    reg add "%~1" /v %%a /t REG_DWORD /d %%b /f >> "%OUT%" 2>&1
+    reg query "%~1" /v %%a >> "%OUT%" 2>&1
+)
 goto :eof

@@ -30,6 +30,8 @@ INF changes (everything else is Marvell's INF as shipped):
   - binary goyawifi.sys, catalog goyawifi.cat, firmware file copied to System32\\drivers
   - no netvwifibus.inf Include/Needs (virtual Wi-Fi bus; not needed for a station, and not checked on 8520)
   - Band 3 (802.11bgn: the 8777 has no 5 GHz radio), HTTxRxStream 0 (1x1)
+  - 5GhzAutoUse40MHz 0: with Marvell's 1 (and 2.4 GHz 0) the driver sets the 802.11n user config for the
+    A band, which MLAN rejects on the 8777; moal_set_reg_params then fails and the adapter does not start
 The inputs are checked against the SHA-256 values below.
 """
 import hashlib, os, re, shutil, sys
@@ -102,6 +104,8 @@ def main():
             l, changes = ' mv14sxx97.bin', changes + 1
         elif re.match(r'(?i)^HKR,,Band\s*,', s):
             l, changes = 'HKR,,Band  ,0x00010001      ,3      ; goyawifi: 802.11bgn (8777: 2.4 GHz only)', changes + 1
+        elif re.match(r'(?i)^HKR,,5GhzAutoUse40MHz\s*,', s):
+            l, changes = '  HKR,,5GhzAutoUse40MHz  ,0x00010001      ,0      ; goyawifi: no 5 GHz radio', changes + 1
         elif re.match(r'(?i)^HKR,,HTTxRxStream\s*,', s):
             l, changes = 'HKR,,HTTxRxStream,  0x00010001, 0     ; goyawifi: 1x1', changes + 1
         elif re.match(r'(?i)^\s*MRVL_SD8797_DESC_STR\s*=', l):
@@ -109,7 +113,8 @@ def main():
         out_lines.append(l)
 
     body = '\r\n'.join(out_lines)
-    for must in ('goyawifi.cat', 'PID_9131&FN_1', '%12%\\goyawifi.sys', 'mv14sxx97.bin', 'HKR,,Band  ,0x00010001      ,3'):
+    for must in ('goyawifi.cat', 'PID_9131&FN_1', '%12%\\goyawifi.sys', 'mv14sxx97.bin', 'HKR,,Band  ,0x00010001      ,3',
+                 'HKR,,5GhzAutoUse40MHz  ,0x00010001      ,0'):
         if must not in body:
             sys.exit(f'INF transform incomplete: "{must}" missing')
     if 'PID_9129' in body or 'netvwifibus' in body.lower() or 'mwls97w8arm.sys' in body:
