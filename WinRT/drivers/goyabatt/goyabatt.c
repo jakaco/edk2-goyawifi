@@ -222,6 +222,8 @@ static NTSTATUS GbSetInformation(PVOID Context, ULONG BatteryTag, BATTERY_SET_IN
 #define PM_LDO_ENA1_1   0x51            /* bit 0 = LDO1 */
 #define LDO1_2V8        4
 
+static VOID GbTouchEventOpen(PGOYA_BATT B);
+
 static VOID GbTouchPower(PGOYA_BATT B)
 {
     BC_HOST *c = &B->Hw;
