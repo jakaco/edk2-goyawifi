@@ -373,9 +373,10 @@ static BOOLEAN GsIsDownloadLoop(PGS_REQUEST_PACKET r)
 NTSYSAPI PVOID NTAPI RtlPcToFileHeader(PVOID PcValue, PVOID *BaseOfImage);
 #define GW_LOG_RVA      0x11eba8
 #define GW_LOG_NAME_RVA 0x85984
-/* MLAN debug classes: MSG 1, FATAL 2, ERROR 4, DATA 8, CMND 0x10, EVENT 0x20, IOCTL 0x80, WARN 0x20000000,
-   INFO 0x40000000 (not INTR, the hex-dump classes or ENTRY) */
-#define GW_LOG_MASK     0x600000BF
+/* MLAN debug classes: MSG 1, FATAL 2, ERROR 4, DATA 8, CMND 0x10, EVENT 0x20, IOCTL 0x80, MPA_D 0x8000, DAT_D 0x10000,
+   CMD_D 0x20000, EVT_D 0x40000, WARN 0x20000000, HEX_DUMP 0x80000000,
+   INFO 0x40000000 (not INTR, FW_D/IF_D (every download block) or ENTRY) */
+#define GW_LOG_MASK     0xE00780BF
 static PUCHAR gWifiLog;
 static LONG gWifiLogSeen;
 static volatile LONG gWifiLogBusy;
