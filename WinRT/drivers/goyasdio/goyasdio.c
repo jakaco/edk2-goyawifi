@@ -349,14 +349,14 @@ static NTSTATUS GsQueryId(PGS_PDO p, BUS_QUERY_ID_TYPE type, PWCHAR *out)
    its status 0x30 and length 0x40/0x41) is only shown for its first GS_TRACE_LOOP requests and then
    counted, so what the driver does after the download still fits. Rejected IOCTLs and unhandled PnP
    requests are logged separately. */
-#define GS_TRACE_REQS 400
+#define GS_TRACE_REQS 600
 #define GS_TRACE_LOOP 40
-static volatile LONG gTraceReqs, gTraceOther, gTraceLoop, gTraceSkipped;
+static volatile LONG gTraceReqs, gTraceOther, gTraceLoop, gTraceSkipped, gTraceSawRead, gTraceInts;
 
 static BOOLEAN GsIsDownloadLoop(PGS_REQUEST_PACKET r)
 {
     ULONG a, addr;
-    if (r->RequestFunction != SDRF_DEVICE_COMMAND) return FALSE;
+    if (r->RequestFunction != SDRF_DEVICE_COMMAND || gTraceSawRead) return FALSE;  /* reads: download is over */
     a = r->Parameters.DeviceCommand.Argument;
     addr = (a >> 9) & 0x1FFFF;
     if (((a >> 28) & 7) != 1) return FALSE;
@@ -383,10 +383,27 @@ static VOID GsTraceReq(PGS_PDO p, PGS_REQUEST_PACKET r, NTSTATUS s)
         if (cmd == 52)
             DbgPrint("goyasdio: f%u CMD52 %s fn%u 0x%05x = %02x -> %02x st %08x\n", p->Fn, (a >> 31) ? "W" : "R",
                      (a >> 28) & 7, (a >> 9) & 0x1FFFF, a & 0xFF, r5 & 0xFF, s);
-        else
-            DbgPrint("goyasdio: f%u CMD%u %s fn%u 0x%05x %s count %u len %u st %08x\n", p->Fn, cmd, (a >> 31) ? "W" : "R",
+        else {
+            ULONG len = r->Parameters.DeviceCommand.Length, i, n;
+            PMDL mdl = r->Parameters.DeviceCommand.Mdl;
+            PUCHAR va = (mdl && len) ? (PUCHAR)MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority) : NULL;
+            char hex[3 * 32 + 1];
+            static const char hd[] = "0123456789abcdef";
+            if (cmd == 53 && !(a >> 31)) InterlockedExchange(&gTraceSawRead, 1);
+            n = len < 32 ? len : 32;
+            hex[0] = 0;
+            if (va && gTraceSawRead) {
+                for (i = 0; i < n; i++) {
+                    hex[3 * i] = hd[va[i] >> 4];
+                    hex[3 * i + 1] = hd[va[i] & 15];
+                    hex[3 * i + 2] = ' ';
+                }
+                hex[3 * n] = 0;
+            }
+            DbgPrint("goyasdio: f%u CMD%u %s fn%u 0x%05x %s count %u len %u st %08x %s\n", p->Fn, cmd, (a >> 31) ? "W" : "R",
                      (a >> 28) & 7, (a >> 9) & 0x1FFFF, (a & (1UL << 27)) ? "blk" : "byte", a & 0x1FF,
-                     r->Parameters.DeviceCommand.Length, s);
+                     len, s, hex);
+        }
     } else {
         ULONG v = 0, n = r->Parameters.GetSetProperty.Length;
         if (r->Parameters.GetSetProperty.Buffer && n) RtlCopyMemory(&v, r->Parameters.GetSetProperty.Buffer, n < 4 ? n : 4);
@@ -582,6 +599,7 @@ static NTSTATUS GsIfAck(PVOID ctx)
 {
     PGS_PDO p = GsPdoFromCtx(ctx);
     if (!p) return STATUS_INVALID_PARAMETER;
+    if (InterlockedIncrement(&gTraceInts) <= 60) DbgPrint("goyasdio: f%u acknowledge interrupt\n", p->Fn);
     p->IntPending = FALSE;                         /* the poll thread re-enables the status on its next tick */
     return STATUS_SUCCESS;
 }
@@ -634,6 +652,8 @@ static VOID GsPollThread(PVOID ctx)
         ExReleaseFastMutex(&f->BusLock);
         if (fire) {
             GS_SDBUS_CALLBACK cb = fire->Callback;
+            if (InterlockedIncrement(&gTraceInts) <= 60)
+                DbgPrint("goyasdio: f%u card interrupt -> callback (%s)\n", fire->Fn, fire->CallbackAtDpc ? "dispatch" : "passive");
             if (cb) {
                 if (fire->CallbackAtDpc) {
                     KIRQL old;
