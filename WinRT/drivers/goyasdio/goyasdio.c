@@ -643,6 +643,8 @@ static VOID GsCmdRespShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
    frame it cannot parse (the destination address read as the frame control) and never answers WPA2 message 1.
    The frame is rebuilt in place as the 8797 firmware delivers it: 802.11 header, LLC/SNAP AA AA 03 00 00 00 +
    type, payload, ending where the Ethernet frame ended; rx_pkt_offset/length are updated and the type becomes 0.
+   The firmware has already decrypted the payload but its header copy keeps the Protected bit; that is cleared, or
+   Windows takes the start of the payload for a CCMP header and drops every encrypted frame (no DHCP lease).
    Aggregated reads hold several packets, each padded to the 256-byte block. */
 #define GS_RXPD_HDR 0x22                       /* 802.11 header copy in the 8777 RxPD */
 static volatile LONG gGsRxShimLog;
@@ -670,6 +672,7 @@ static VOID GsRxDataShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
                     npo = po + 14 - hl; npl = pl - 14 + hl;
                 }
                 RtlMoveMemory(va + r + npo, h, hl);
+                va[r + npo + 1] &= ~0x40;              /* decrypted by the firmware: no Protected bit */
                 va[r + 2] = (UCHAR)npl; va[r + 3] = (UCHAR)(npl >> 8);
                 va[r + 4] = (UCHAR)npo; va[r + 5] = (UCHAR)(npo >> 8);
                 va[r + 6] = 0;
