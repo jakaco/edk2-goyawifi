@@ -58,6 +58,7 @@
 #define STATE_RUNNING   1
 #define STATE_PARKED    2
 #define STATE_OS_PARKED 3
+#define STATE_OS_JUMPED 4
 
 #define CMD_PARK        1
 #define CMD_PING        2
@@ -76,7 +77,7 @@ STATIC UINT32                        mSavedCc2;
 STATIC BOOLEAN                       mCpu1Released;
 STATIC EFI_EVENT                     mExitBsEvent;
 STATIC EFI_EVENT                     mEndOfDxeEvent;
-STATIC CHAR8                         mReport[1536];
+STATIC CHAR8                         mReport[2048];
 STATIC UINTN                         mReportLen;
 STATIC PXA988_CPU1_PARKING_PROTOCOL  mParking;
 
@@ -439,6 +440,52 @@ Cpu1Start (
   return TRUE;
 }
 
+//
+// Windows RT 8520's kernel: stops that happen before goyabug loads show nothing
+// on this device, and the system restarts (DRAM kept). Find the kernel image
+// in DRAM by its PE header and read KiBugCheckData (stop code, 4 parameters).
+//
+#define NT8520_TIMESTAMP     0x500CCE68
+#define NT8520_SIZE          0x514000
+#define NT8520_BUGCHECKDATA  0x1CB200
+
+STATIC
+VOID
+ReportWindowsStop (
+  VOID
+  )
+{
+  UINTN             Addr;
+  UINT32            Lfanew;
+  volatile UINT32   *Bc;
+  UINTN             Found;
+
+  Found = 0;
+  for (Addr = 0x01000000; Addr + NT8520_SIZE <= 0x40000000; Addr += EFI_PAGE_SIZE) {
+    if (*(volatile UINT16 *)Addr != 0x5A4D) {
+      continue;
+    }
+
+    Lfanew = *(volatile UINT32 *)(Addr + 0x3C);
+    if ((Lfanew > 0x800) || (*(volatile UINT32 *)(Addr + Lfanew) != 0x00004550) ||
+        (*(volatile UINT32 *)(Addr + Lfanew + 8) != NT8520_TIMESTAMP))
+    {
+      continue;
+    }
+
+    Bc = (volatile UINT32 *)(Addr + NT8520_BUGCHECKDATA);
+    Log ("previous session: Windows kernel image at 0x%08x, KiBugCheckData %08x %08x %08x %08x %08x\n",
+      (UINT32)Addr, Bc[0], Bc[1], Bc[2], Bc[3], Bc[4]);
+    if (++Found == 4) {
+      break;
+    }
+  }
+
+  if (Found == 0) {
+    Log ("previous session: no Windows kernel image left in DRAM\n");
+  }
+}
+
 /**
   What the previous OS session did with CPU1's parking page (DRAM survives a
   warm restart): state 3 with no wake-ups = the OS never sent the wake-up
@@ -472,6 +519,9 @@ ReportPreviousSession (
   Log ("previous session: CPU0 page ProcessorId 0x%08x JumpAddress 0x%08x\n",
     *(volatile UINT32 *)(mPages + PP_CPU_ID),
     *(volatile UINT32 *)(mPages + PP_JUMP));
+  if (Mb[MB_STATE / 4] == STATE_OS_JUMPED) {
+    ReportWindowsStop ();
+  }
 }
 
 /**

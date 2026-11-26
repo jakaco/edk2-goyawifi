@@ -219,7 +219,7 @@ SaveCpu1Report (
   IN EFI_FILE_PROTOCOL  *Root
   )
 {
-  CHAR8              Report[1536];
+  CHAR8              Report[2048];
   CHAR8              Head[64];
   UINTN              Size;
   EFI_FILE_PROTOCOL  *File;
