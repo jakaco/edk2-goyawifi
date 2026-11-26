@@ -184,11 +184,13 @@ static volatile ULONG gPwr;
 static ULONG gNakRun, gPwrTick, gNextEvOpen;
 static BOOLEAN gPwrPending;
 
-/* extra status lines below all drivers' values: "5 <n> <value>", n = 2.. */
+/* extra status lines "5 <n> <value>", n = 2.., from row 21 down, in a second column left of the
+   drivers' column: goyasdio (id 8) uses rows 21-23 of that column, and 10 lines would not fit below it
+   (32 rows of 18 px on the 600 px screen) */
 static VOID TraceExtra(ULONG N, ULONG Value)
 {
     PULONG fb = GtFb();
-    ULONG y = 8 + (7 + 6 * 2 + 2 + (N - 2)) * 6 * GT_SCALE, x = GT_FB_W - 12 * 4 * GT_SCALE;
+    ULONG y = 8 + (7 + 7 * 2 + (N - 2)) * 6 * GT_SCALE, x = GT_FB_W - 2 * 12 * 4 * GT_SCALE;
     if (fb == NULL) return;
     x = GtHex(fb, x, y, GOYA_TRACE_ID, 1, 0x00FFFFFF, 0x00202020);
     x = GtHex(fb, x, y, N, 1, 0x00808080, 0x00202020);
