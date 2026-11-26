@@ -635,25 +635,50 @@ static VOID GsCmdRespShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
 }
 
 /* Received data (function 1 data ports 0x10001-0x1FFFF, read). Each packet: le16 length, le16 type (0 = data),
-   then the RxPD: u8 bss_type, u8 bss_num, le16 rx_pkt_length, le16 rx_pkt_offset, le16 rx_pkt_type, ... The 8777
-   FP66 firmware marks ordinary received frames rx_pkt_type 2 (with its 802.11 header copied in front of the
-   802.3 frame at rx_pkt_offset); the 8797 driver takes 2 for a wake-up/non-data packet and Windows never
-   answers WPA2 message 1. Type 2 becomes 0 (802.3 data at rx_pkt_offset). Aggregated reads hold several
-   packets, each padded to the 256-byte block. */
+   then the RxPD: u8 bss_type, u8 bss_num, le16 rx_pkt_length, le16 rx_pkt_offset, le16 rx_pkt_type, ...
+   goyawifi is a Native Wi-Fi driver written for the 8797 Windows firmware, which delivers the whole 802.11 frame
+   at rx_pkt_offset; the driver hands that to Windows as it is (its receive filter reads the frame type from the
+   first byte there). The 8777 FP66 firmware marks received frames rx_pkt_type 2 and delivers an Ethernet frame
+   (DA, SA, type) at rx_pkt_offset, with the frame's 802.11 header copied in at RxPD+0x22. Windows then gets a
+   frame it cannot parse (the destination address read as the frame control) and never answers WPA2 message 1.
+   The frame is rebuilt in place as the 8797 firmware delivers it: 802.11 header, LLC/SNAP AA AA 03 00 00 00 +
+   type, payload, ending where the Ethernet frame ended; rx_pkt_offset/length are updated and the type becomes 0.
+   Aggregated reads hold several packets, each padded to the 256-byte block. */
+#define GS_RXPD_HDR 0x22                       /* 802.11 header copy in the 8777 RxPD */
 static volatile LONG gGsRxShimLog;
 
 static VOID GsRxDataShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
 {
-    ULONG off = 0, plen;
+    ULONG off = 0, plen, r, po, pl, hl, e, npo, npl;
+    PUCHAR h;
     if ((arg >> 31) || ((arg >> 28) & 7) != 1 || ((arg >> 9) & 0x1FFFF) <= 0x10000) return;
     while (off + 12 <= len) {
         plen = (ULONG)(va[off] | (va[off + 1] << 8));
         if (plen < 12 || plen > len - off) break;
-        if (va[off + 2] == 0 && va[off + 3] == 0 && va[off + 10] == 2 && va[off + 11] == 0) {
-            va[off + 10] = 0;
-            if (InterlockedIncrement(&gGsRxShimLog) <= 20)
-                DbgPrint("goyasdio: f%u rx packet type 2 -> 0 (length %u, offset %u)\n", p->Fn,
-                         (ULONG)(va[off + 6] | (va[off + 7] << 8)), (ULONG)(va[off + 8] | (va[off + 9] << 8)));
+        r = off + 4;                                   /* RxPD */
+        if (va[off + 2] == 0 && va[off + 3] == 0 && va[r + 6] == 2 && va[r + 7] == 0 && plen >= 4 + GS_RXPD_HDR + 24) {
+            pl = (ULONG)(va[r + 2] | (va[r + 3] << 8));
+            po = (ULONG)(va[r + 4] | (va[r + 5] << 8));
+            h = va + r + GS_RXPD_HDR;
+            hl = 24 + ((h[1] & 3) == 3 ? 6 : 0) + ((h[0] & 0x80) ? 2 : 0) + (((h[0] & 0x80) && (h[1] & 0x80)) ? 4 : 0);
+            e = r + po;
+            if ((h[0] & 0x0C) == 0x08 && pl >= 14 && GS_RXPD_HDR + hl <= po && e + pl <= off + plen) {
+                if (((va[e + 12] << 8) | va[e + 13]) >= 0x600) {      /* Ethernet II: SNAP header before the type */
+                    va[e + 6] = 0xAA; va[e + 7] = 0xAA; va[e + 8] = 0x03; va[e + 9] = 0; va[e + 10] = 0; va[e + 11] = 0;
+                    npo = po + 6 - hl; npl = pl - 6 + hl;
+                } else {                                               /* 802.3: LLC follows the length */
+                    npo = po + 14 - hl; npl = pl - 14 + hl;
+                }
+                RtlMoveMemory(va + r + npo, h, hl);
+                va[r + 2] = (UCHAR)npl; va[r + 3] = (UCHAR)(npl >> 8);
+                va[r + 4] = (UCHAR)npo; va[r + 5] = (UCHAR)(npo >> 8);
+                va[r + 6] = 0;
+                if (InterlockedIncrement(&gGsRxShimLog) <= 20)
+                    DbgPrint("goyasdio: f%u rx 802.11 frame rebuilt: fc %02x%02x header %u, offset %u -> %u, length %u -> %u\n",
+                             p->Fn, va[r + npo], va[r + npo + 1], hl, po, npo, pl, npl);
+            } else if (InterlockedIncrement(&gGsRxShimLog) <= 20) {
+                DbgPrint("goyasdio: f%u rx type 2 packet left alone: fc %02x%02x offset %u length %u\n", p->Fn, h[0], h[1], po, pl);
+            }
         }
         off += (plen + 255) & ~255UL;
     }
