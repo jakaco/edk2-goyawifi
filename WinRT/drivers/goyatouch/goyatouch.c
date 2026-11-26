@@ -169,6 +169,17 @@ static PUCHAR gGpio;                 /* mapped GPIO block (read-only use + GCDR)
    gClkLost  = poll number at which a poll first found the clock wrong (0 = never) */
 static volatile ULONG gClkDiag, gRecDiag, gClkLost;
 static PULONG gClk;
+/* Power-cycle requests to goyabatt (it owns the PMIC bus), through the named notification event
+   \BaseNamedObjects\GoyaTouchPowerCycle: we set it after NAK_CYCLE failed inits in a row in which the
+   chip did not even acknowledge its address, goyabatt switches LDO1 off and on and clears it.
+   Shown as "5 B": requests (31:24) | answered (23:16) | failed inits in a row that were NAKs (15:0). */
+#define NAK_CYCLE        4
+#define CYCLE_GAP_TICKS  (30000 / POLL_MS)     /* at most one request per 30 s */
+static PKEVENT gPwrEv;
+static HANDLE gPwrEvH;
+static volatile ULONG gPwr;
+static ULONG gNakRun, gPwrTick;
+static BOOLEAN gPwrPending;
 
 /* extra status lines below all drivers' values: "5 <n> <value>", n = 2.. */
 static VOID TraceExtra(ULONG N, ULONG Value)
@@ -220,6 +231,7 @@ static VOID HeartbeatThread(PVOID Context)
         TraceExtra(8, gClkDiag);
         TraceExtra(9, gRecDiag);
         TraceExtra(10, gClk != NULL ? ((READ_REGISTER_ULONG(gClk) & 0xFF) << 24) | (gClkLost & 0xFFFFFF) : 0xEEEEEEEE);
+        TraceExtra(11, gPwrEv != NULL ? (gPwr & 0xFFFF0000) | (gNakRun & 0xFFFF) : 0xEEEEEEEE);
     } while (KeWaitForSingleObject(&gHbStop, Executive, KernelMode, FALSE, &t) == STATUS_TIMEOUT);
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
@@ -612,9 +624,29 @@ static VOID PollOnce(DEV_EXT *E)
     E->LastY = y;
 }
 
+/* after a failed init: count NAKs in a row and ask goyabatt for a power cycle */
+static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
+{
+    if (gPwrPending && !KeReadStateEvent(gPwrEv)) {
+        gPwrPending = FALSE;
+        gPwr += 0x10000;                                            /* answered */
+        E->InitTries = 0;                                           /* back to fast retries */
+    }
+    if (st != STATUS_NO_SUCH_DEVICE) { gNakRun = 0; return; }
+    gNakRun++;
+    if (gPwrEv != NULL && !gPwrPending && gNakRun >= NAK_CYCLE &&
+        (gPwrTick == 0 || Tick - gPwrTick > CYCLE_GAP_TICKS)) {
+        gPwrTick = Tick ? Tick : 1;
+        gPwrPending = TRUE;
+        gPwr += 0x1000000;
+        KeSetEvent(gPwrEv, IO_NO_INCREMENT, FALSE);
+    }
+}
+
 static VOID PollStep(DEV_EXT *E, ULONG Tick)
 {
     E->Tick = Tick;
+    if (gPwrPending && !KeReadStateEvent(gPwrEv)) PowerCycleCheck(E, STATUS_SUCCESS, Tick);
     if (!E->Initialized) {
         /* every 0.5 s for the first 20 tries, then every 5 s (a missing chip costs CPU: polled I2C) */
         if (Tick % (E->InitTries < 20 ? 50 : 500) == 0) {
@@ -633,6 +665,9 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
                 /* slot 1 until the chip answers: bus lines (SDA bit 28, SCL bit 29), APBC TWSI1 clock
                    register (bits 23:16), I2C status register at the failure (bits 15:0) */
                 gInfo = ((gLastIbmr & 3) << 28) | ((E->Clock ? (READ_REGISTER_ULONG(E->Clock) & 0xFF) : 0xEE) << 16) | (gLastIsr & 0xFFFF);
+                PowerCycleCheck(E, st, Tick);
+            } else {
+                gNakRun = 0;
             }
             E->Initialized = (BOOLEAN)NT_SUCCESS(st);
             if (E->Initialized) { E->LastAlive = E->LastProbe = Tick; E->InitTries = 0; E->HbSeen = FALSE; gWatchdog &= ~0x8000UL; }
@@ -940,6 +975,7 @@ static VOID DriverUnload(PDRIVER_OBJECT Driver)
         ObDereferenceObject(gHbThread);
         gHbThread = NULL;
     }
+    if (gPwrEvH != NULL) { ZwClose(gPwrEvH); gPwrEvH = NULL; gPwrEv = NULL; }
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
@@ -959,6 +995,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
     Driver->DriverUnload = DriverUnload;
 
     gStage = 0x00;
+    {
+        UNICODE_STRING n;
+        RtlInitUnicodeString(&n, L"\\BaseNamedObjects\\GoyaTouchPowerCycle");
+        gPwrEv = IoCreateNotificationEvent(&n, &gPwrEvH);
+        if (gPwrEv != NULL) KeClearEvent(gPwrEv);
+    }
     KeInitializeEvent(&gHbStop, NotificationEvent, FALSE);
     if (NT_SUCCESS(PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL, HeartbeatThread, NULL))) {
         ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)&gHbThread, NULL);
