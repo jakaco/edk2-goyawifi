@@ -364,8 +364,69 @@ static BOOLEAN GsIsDownloadLoop(PGS_REQUEST_PACKET r)
     return !(a >> 31) && (addr == 0x30 || addr == 0x40 || addr == 0x41);
 }
 
+/* Bring-up: the Marvell driver's own log. goyawifi.sys (mwls97w8arm.sys 14.62.17215.91) formats its MOAL/MLAN
+   messages ("[MOAL file line func] text") into a ring in its .data: control block at RVA 0x11eba8, +16 the
+   message mask, +24 the enable flag, 512 entries of 192 bytes at +0x1c, counter at +0x1801c (pre-increment,
+   entry = counter & 511). Nothing reads the ring on Windows RT, so goyasdio finds the image from the interrupt
+   callback the driver registers, checks it is that build ("moal_main.cpp" at RVA 0x85984), turns the log on
+   and copies new entries to the boot log as requests go by. */
+NTSYSAPI PVOID NTAPI RtlPcToFileHeader(PVOID PcValue, PVOID *BaseOfImage);
+#define GW_LOG_RVA      0x11eba8
+#define GW_LOG_NAME_RVA 0x85984
+/* MLAN debug classes: MSG 1, FATAL 2, ERROR 4, CMND 0x10, EVENT 0x20, IOCTL 0x80, WARN 0x20000000, INFO 0x40000000
+   (not DATA, INTR, the hex-dump classes or ENTRY) */
+#define GW_LOG_MASK     0x600000B7
+static PUCHAR gWifiLog;
+static LONG gWifiLogSeen;
+static volatile LONG gWifiLogBusy;
+
+static VOID GsWifiLogArm(VOID)
+{
+    if (!gWifiLog) return;
+    if (*(volatile ULONG *)(gWifiLog + 16) != GW_LOG_MASK) *(volatile ULONG *)(gWifiLog + 16) = GW_LOG_MASK;
+    if (*(volatile ULONG *)(gWifiLog + 24) != 1) *(volatile ULONG *)(gWifiLog + 24) = 1;
+}
+
+static VOID GsWifiLogAttach(PVOID routine)
+{
+    PVOID base = NULL;
+    if (gWifiLog || !routine) return;
+    RtlPcToFileHeader(routine, &base);
+    if (!base || RtlCompareMemory((PUCHAR)base + GW_LOG_NAME_RVA, "moal_main.cpp", 14) != 14) {
+        DbgPrint("goyasdio: function driver at %p is not the known Marvell build: its log stays off\n", base);
+        return;
+    }
+    gWifiLog = (PUCHAR)base + GW_LOG_RVA;
+    gWifiLogSeen = *(volatile LONG *)(gWifiLog + 0x1801c);
+    GsWifiLogArm();
+    DbgPrint("goyasdio: Marvell driver at %p, its log turned on (counter %d)\n", base, gWifiLogSeen);
+}
+
+static VOID GsWifiLogDump(VOID)
+{
+    LONG n, i;
+    char line[193];
+    if (!gWifiLog || InterlockedExchange(&gWifiLogBusy, 1)) return;
+    GsWifiLogArm();
+    n = *(volatile LONG *)(gWifiLog + 0x1801c);
+    if (n - gWifiLogSeen > 511) {
+        DbgPrint("mrvl: ... %d messages lost\n", n - gWifiLogSeen - 511);
+        gWifiLogSeen = n - 511;
+    }
+    for (i = gWifiLogSeen + 1; i - n <= 0; i++) {
+        ULONG k;
+        RtlCopyMemory(line, gWifiLog + 0x1c + (i & 511) * 192, 192);
+        line[192] = 0;
+        for (k = 0; line[k]; k++) if (line[k] == '\n' || line[k] == '\r') line[k] = ' ';
+        DbgPrint("mrvl: %s\n", line);
+    }
+    gWifiLogSeen = n;
+    InterlockedExchange(&gWifiLogBusy, 0);
+}
+
 static VOID GsTraceReq(PGS_PDO p, PGS_REQUEST_PACKET r, NTSTATUS s)
 {
+    GsWifiLogDump();
     if (GsIsDownloadLoop(r) && InterlockedIncrement(&gTraceLoop) > GS_TRACE_LOOP) {
         InterlockedIncrement(&gTraceSkipped);
         return;
@@ -613,6 +674,7 @@ static NTSTATUS GsIfInitialize(PVOID ctx, PGS_INTERFACE_PARAMETERS ip)
     p->CallbackCtx = ip->CallbackRoutineContext;
     p->CallbackAtDpc = ip->CallbackAtDpcLevel;
     p->Callback = ip->DeviceGeneratesInterrupts ? ip->CallbackRoutine : NULL;
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL) GsWifiLogAttach((PVOID)ip->CallbackRoutine);
     p->IntPending = FALSE;
     p->Forward = TRUE;
     if (ip->DeviceGeneratesInterrupts && KeGetCurrentIrql() == PASSIVE_LEVEL && f && f->CardOk) {
@@ -887,6 +949,10 @@ static NTSTATUS GsPdoPnp(PGS_PDO p, PIRP irp)
         if (InterlockedIncrement(&gTraceOther) <= 40)
             DbgPrint("goyasdio: f%u PnP minor %02x not handled (status %08x)\n", p->Fn, sp->MinorFunction, s);
         break;
+    }
+    if (sp->MinorFunction == IRP_MN_REMOVE_DEVICE || sp->MinorFunction == IRP_MN_SURPRISE_REMOVAL) {
+        GsWifiLogDump();                           /* the function driver may be unloaded after this */
+        gWifiLog = NULL;
     }
     if (sp->MinorFunction == IRP_MN_START_DEVICE || sp->MinorFunction == IRP_MN_STOP_DEVICE ||
         sp->MinorFunction == IRP_MN_REMOVE_DEVICE || sp->MinorFunction == IRP_MN_SURPRISE_REMOVAL)
