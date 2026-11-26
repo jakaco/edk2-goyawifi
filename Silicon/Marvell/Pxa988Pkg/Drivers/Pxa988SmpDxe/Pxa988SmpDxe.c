@@ -60,6 +60,8 @@
 #define STATE_PARKED    2
 #define STATE_OS_PARKED 3
 #define STATE_OS_JUMPED 4
+#define HALX_OFFSET     0xE00           // HalExtMmpTimer breadcrumbs in the CPU0 page
+#define HALX_MAGIC      0x584C4148      // "HALX"
 
 #define CMD_PARK        1
 #define CMD_PING        2
@@ -520,6 +522,21 @@ ReportPreviousSession (
   Log ("previous session: CPU0 page ProcessorId 0x%08x JumpAddress 0x%08x\n",
     *(volatile UINT32 *)(mPages + PP_CPU_ID),
     *(volatile UINT32 *)(mPages + PP_JUMP));
+
+  //
+  // HalExtMmpTimer's breadcrumbs (CPU0 page + 0xE00, see WinRT/HalExtMmpTimer/HalExtension.c):
+  // which processor took the timer interrupts and called the timer functions. Cleared once read.
+  //
+  Pp = (volatile UINT32 *)(mPages + HALX_OFFSET);
+  if (Pp[0] == HALX_MAGIC) {
+    Log ("previous session: timer IRQs %u (%u on CPU1, last on CPU%u), counter reads %u (%u on CPU1), ArmTimer %u (last mode %u ticks %u on CPU%u), CPU1 seen %u\n",
+      Pp[1], Pp[2], Pp[3], Pp[4], Pp[5], Pp[6], Pp[7] & 0xFF, Pp[8], (Pp[7] >> 8) & 0xFF, Pp[9]);
+    Pp[0] = 0;
+    WriteBackDataCacheRange ((VOID *)(mPages + HALX_OFFSET), 64);
+  } else {
+    Log ("previous session: no timer breadcrumbs\n");
+  }
+
   if (Mb[MB_STATE / 4] == STATE_OS_JUMPED) {
     ReportWindowsStop ();
   }
