@@ -116,7 +116,14 @@
 #define GPIO94_BIT       (1UL << 30)
 #define GPIO_GPLR        0x00
 #define GPIO_GPDR        0x0C
+#define GPIO_GPSR        0x18
+#define GPIO_GPCR        0x24
+#define GPIO_GSDR        0x54
 #define GPIO_GCDR        0x60
+/* TWSI1 pins as GPIOs for the bus recovery: GPIO87 = SCL, GPIO88 = SDA (bank 2, bits 23/24) */
+#define GPIO_TWSI1_BANK  0x008
+#define GPIO87_BIT       (1UL << 23)
+#define GPIO88_BIT       (1UL << 24)
 #define MFPR_GPIO94_PHYS 0xD401E224ULL
 #define SUB_BIT_EXIST     0x01
 /* ESD watchdog as in Samsung's bt532_ts.c: the chip raises an interrupt every 100 scans (~1 s) even
@@ -154,6 +161,14 @@ static volatile ULONG gStage, gInit = 0xFFFFFFFF, gInfo, gChip, gReports;
 static volatile ULONG gLastStatus, gLastSub, gReadFails, gNonZero, gRejected;
 static volatile ULONG gPolls, gRaw4, gReadback, gIntInfo, gIntLow, gWatchdog;
 static PUCHAR gGpio;                 /* mapped GPIO block (read-only use + GCDR) */
+/* TWSI1 clock register (APBC) and bus recovery, shown as "5 8" .. "5 A":
+   gClkDiag  = value found when it was wrong (31:24) | value read back after our fix (23:16) |
+               times it was found wrong (15:0)
+   gRecDiag  = bus recoveries (31:16) | SCL pulses needed last time (15:8) | line levels before (7:4) and
+               after (3:0) the last recovery (bit 1 SDA, bit 0 SCL; 3 = both high)
+   gClkLost  = poll number at which a poll first found the clock wrong (0 = never) */
+static volatile ULONG gClkDiag, gRecDiag, gClkLost;
+static PULONG gClk;
 
 /* extra status lines below all drivers' values: "5 <n> <value>", n = 2.. */
 static VOID TraceExtra(ULONG N, ULONG Value)
@@ -202,6 +217,9 @@ static VOID HeartbeatThread(PVOID Context)
         TraceExtra(5, gRaw4);
         TraceExtra(6, gIntLow);
         TraceExtra(7, gWatchdog);
+        TraceExtra(8, gClkDiag);
+        TraceExtra(9, gRecDiag);
+        TraceExtra(10, gClk != NULL ? ((READ_REGISTER_ULONG(gClk) & 0xFF) << 24) | (gClkLost & 0xFFFFFF) : 0xEEEEEEEE);
     } while (KeWaitForSingleObject(&gHbStop, Executive, KernelMode, FALSE, &t) == STATUS_TIMEOUT);
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
@@ -227,6 +245,7 @@ static VOID I2cReset(DEV_EXT *E)
         if ((v & (APBC_APBCLK | APBC_FNCLK | APBC_RST)) != (APBC_APBCLK | APBC_FNCLK)) {
             WRITE_REGISTER_ULONG(E->Clock, (v & ~APBC_RST) | APBC_APBCLK | APBC_FNCLK);
             KeStallExecutionProcessor(10);
+            gClkDiag = ((v & 0xFF) << 24) | ((READ_REGISTER_ULONG(E->Clock) & 0xFF) << 16) | ((gClkDiag + 1) & 0xFFFF);
         }
     }
     Wr(E, I2C_ICR, ICR_UR);
@@ -276,6 +295,72 @@ static NTSTATUS I2cRx(DEV_EXT *E, PUCHAR Data, BOOLEAN Last)
     st = I2cWait(E, ISR_IRF);
     if (NT_SUCCESS(st)) *Data = (UCHAR)Rd(E, I2C_IDBR);
     return st;
+}
+
+/* Unit reset through the APBC register (RST with the clocks on, then released), as the vendor
+   i2c-pxa does after a hang; the ICR_UR soft reset alone did not bring a timed-out unit back. */
+static VOID I2cHardReset(DEV_EXT *E)
+{
+    if (E->Clock != NULL) {
+        ULONG v = READ_REGISTER_ULONG(E->Clock) & ~(APBC_APBCLK | APBC_FNCLK | APBC_RST);
+        WRITE_REGISTER_ULONG(E->Clock, v | APBC_APBCLK | APBC_FNCLK | APBC_RST);
+        KeStallExecutionProcessor(20);
+        WRITE_REGISTER_ULONG(E->Clock, v | APBC_APBCLK | APBC_FNCLK);
+        KeStallExecutionProcessor(20);
+    }
+}
+
+/* I2C bus recovery (I2C spec 3.1.16): a slave stopped in the middle of a byte holds SDA low until it
+   gets the rest of its clocks. Switch GPIO87/88 to GPIO, release both (the pull-ups take them high),
+   clock SCL up to 9 times until SDA is released, send a STOP, then give the pins back to TWSI1. */
+static ULONG GpioLevels(VOID)
+{
+    ULONG l = READ_REGISTER_ULONG((PULONG)(gGpio + GPIO_TWSI1_BANK + GPIO_GPLR));
+    return ((l & GPIO88_BIT) ? 2 : 0) | ((l & GPIO87_BIT) ? 1 : 0);
+}
+
+static VOID GpioLine(ULONG Bit, BOOLEAN High)
+{
+    PUCHAR b = gGpio + GPIO_TWSI1_BANK;
+    if (High) {
+        WRITE_REGISTER_ULONG((PULONG)(b + GPIO_GCDR), Bit);         /* input: released, pulled up */
+    } else {
+        WRITE_REGISTER_ULONG((PULONG)(b + GPIO_GPCR), Bit);         /* output low */
+        WRITE_REGISTER_ULONG((PULONG)(b + GPIO_GSDR), Bit);
+    }
+    KeStallExecutionProcessor(5);
+}
+
+static VOID I2cBusRecover(VOID)
+{
+    PHYSICAL_ADDRESS pa;
+    PULONG m;
+    ULONG a, b, before, n = 0;
+
+    if (gGpio == NULL) return;
+    pa.QuadPart = MFPR_TWSI1_PHYS;
+    m = (PULONG)MmMapIoSpace(pa, 8, MmNonCached);
+    if (m == NULL) return;
+    a = READ_REGISTER_ULONG(&m[0]);
+    b = READ_REGISTER_ULONG(&m[1]);
+    GpioLine(GPIO87_BIT, TRUE);
+    GpioLine(GPIO88_BIT, TRUE);
+    WRITE_REGISTER_ULONG(&m[0], a & ~7UL);                          /* AF0 = GPIO */
+    WRITE_REGISTER_ULONG(&m[1], b & ~7UL);
+    KeStallExecutionProcessor(10);
+    before = GpioLevels();
+    while (n < 9 && !(GpioLevels() & 2)) {
+        GpioLine(GPIO87_BIT, FALSE);
+        GpioLine(GPIO87_BIT, TRUE);
+        n++;
+    }
+    GpioLine(GPIO88_BIT, FALSE);                                    /* STOP: SDA low -> high while SCL high */
+    GpioLine(GPIO87_BIT, TRUE);
+    GpioLine(GPIO88_BIT, TRUE);
+    gRecDiag = ((gRecDiag + 0x10000) & 0xFFFF0000) | (n << 8) | (before << 4) | GpioLevels();
+    WRITE_REGISTER_ULONG(&m[0], a);
+    WRITE_REGISTER_ULONG(&m[1], b);
+    MmUnmapIoSpace(m, 8);
 }
 
 static VOID I2cRecover(DEV_EXT *E)
@@ -464,6 +549,10 @@ static VOID PollOnce(DEV_EXT *E)
     int i;
 
     gPolls++;
+    if (gClkLost == 0 && E->Clock != NULL &&
+        (READ_REGISTER_ULONG(E->Clock) & (APBC_APBCLK | APBC_FNCLK | APBC_RST)) != (APBC_APBCLK | APBC_FNCLK)) {
+        gClkLost = gPolls;
+    }
     intLow = (BOOLEAN)(gGpio != NULL && !(READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR)) & GPIO94_BIT));
     if (intLow) gIntLow++;
     if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
@@ -534,6 +623,13 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
             st = ZInitChip(E);
             gInit = (ULONG)st;
             if (!NT_SUCCESS(st)) {
+                /* a stuck unit or bus (timeout / bus error, not a plain NAK): reset the unit through the
+                   APBC register and clock the bus free before the next try */
+                if (st == STATUS_IO_TIMEOUT || st == STATUS_IO_DEVICE_ERROR) {
+                    I2cHardReset(E);
+                    I2cBusRecover();
+                    I2cReset(E);
+                }
                 /* slot 1 until the chip answers: bus lines (SDA bit 28, SCL bit 29), APBC TWSI1 clock
                    register (bits 23:16), I2C status register at the failure (bits 15:0) */
                 gInfo = ((gLastIbmr & 3) << 28) | ((E->Clock ? (READ_REGISTER_ULONG(E->Clock) & 0xFF) : 0xEE) << 16) | (gLastIsr & 0xFFFF);
@@ -613,6 +709,7 @@ static VOID StopDevice(DEV_EXT *E)
         E->Thread = NULL;
     }
     if (E->Twsi != NULL) { MmUnmapIoSpace(E->Twsi, TWSI1_LEN); E->Twsi = NULL; }
+    gClk = NULL;
     if (E->Clock != NULL) { MmUnmapIoSpace(E->Clock, sizeof(ULONG)); E->Clock = NULL; }
     E->Initialized = FALSE;
     E->Started = FALSE;
@@ -671,6 +768,7 @@ static NTSTATUS StartDevice(DEV_EXT *E)
     E->Twsi = (PUCHAR)MmMapIoSpace(pa, TWSI1_LEN, MmNonCached);
     pa.QuadPart = APBC_TWSI1_PHYS;
     E->Clock = (PULONG)MmMapIoSpace(pa, sizeof(ULONG), MmNonCached);
+    gClk = E->Clock;
     if (E->Twsi == NULL) return STATUS_INSUFFICIENT_RESOURCES;
 
     KeInitializeEvent(&E->StopEvent, NotificationEvent, FALSE);
