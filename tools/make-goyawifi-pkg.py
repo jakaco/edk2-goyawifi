@@ -19,11 +19,10 @@ interface count, pointer to a list of 20-byte BSS attributes {type, frame type, 
 gives modes 3 and 4 five interfaces: station, uAP and Wi-Fi Direct 0, 1, 2. The 8777 FP66 firmware never
 answers the first command for Wi-Fi Direct 2 (TX_RATE_CFG, seq 0x221f); the driver times out after 10 s,
 dumps registers through an SDIO handle that is already gone and bugchecks (0x7E in goyawifi.sys+0x45302).
-With three interfaces (station, uAP, Wi-Fi Direct 0) every command succeeds, but the driver then shuts
-the firmware down itself (FUNC_SHUTDOWN) and fails its start: uAP and Wi-Fi Direct are virtual Wi-Fi
-ports, which Windows 8.0 provides through the virtual Wi-Fi bus this package does not install. The mode is
-hard-coded (cmp r3, #4 at RVA 0x1a47a, which picks the mode-table entry); it becomes mode 1, the table's
-station-only entry. The signing step re-signs the binary.
+Both counts become 3: station, uAP and one Wi-Fi Direct interface, as the Android driver for this firmware
+sets up; with these every command succeeds. (The mode itself, hard-coded 4 at RVA 0x1a47a, must stay:
+station-only mode 1 bugchecks later, 0x7E at goyawifi.sys+0x31CAE, where the driver reads interface 2's
+bss index without a check.) The signing step re-signs the binary.
 
 INF changes (everything else is Marvell's INF as shipped):
   - hardware IDs SD\\VID_02DF&PID_9131(&FN_1) (88W8777 WLAN function, from goyasdio) instead of PID_9129
@@ -31,7 +30,10 @@ INF changes (everything else is Marvell's INF as shipped):
   - no netvwifibus.inf Include/Needs (virtual Wi-Fi bus; not needed for a station, and not checked on 8520)
   - Band 3 (802.11bgn: the 8777 has no 5 GHz radio), HTTxRxStream 0 (1x1)
   - 5GhzAutoUse40MHz 0: with Marvell's 1 (and 2.4 GHz 0) the driver sets the 802.11n user config for the
-    A band, which MLAN rejects on the 8777; moal_set_reg_params then fails and the adapter does not start
+    A band only, which the 8777 does not have
+  - Dot11nAggMode 0 (no A-MPDU): the driver's 802.11n user config (htusrcap 0x14000000 with A-MPDU) is
+    rejected by MLAN against the 8777 firmware's 802.11n capabilities; moal_set_reg_params then fails,
+    the driver shuts the firmware down and the adapter does not start (Code 10)
 The inputs are checked against the SHA-256 values below.
 """
 import hashlib, os, re, shutil, sys
@@ -40,10 +42,10 @@ SYS_SHA = 'ac47a0927099cffac55d51dbc91da32f848481f04987a8de5027548245a87fde'   #
 INF_SHA = '0ee61f5d63f424a6f0478a9c6410275bcb98269dc266d1d27d9feab2d0329d72'   # mwls97w8arm.inf (UTF-16)
 FW_SHA  = 'd34311ee2ac590d8cddde37a2f903865ee50fa4069390f858d322eac2c81f518'   # sd8777_uapsta.bin 14.66.33.p46
 
-# (file offset, original bytes, new bytes): operating mode 4 (station + uAP + Wi-Fi Direct) -> 1 (station);
-# ldrh.w r3, [r1], #8 / cmp r3, #4 -> cmp r3, #1 (RVA 0x1a476, file 0x19876)
+# (file offset, original bytes, new bytes): interface counts of operating modes 3 and 4, 5 -> 3
 SYS_PATCHES = [
-    (0x19876, bytes.fromhex('31f8083b042b'), bytes.fromhex('31f8083b012b')),
+    (0x11a9b8, bytes.fromhex('03000500'), bytes.fromhex('03000300')),
+    (0x11a9c0, bytes.fromhex('04000500'), bytes.fromhex('04000300')),
 ]
 
 
@@ -106,6 +108,8 @@ def main():
             l, changes = 'HKR,,Band  ,0x00010001      ,3      ; goyawifi: 802.11bgn (8777: 2.4 GHz only)', changes + 1
         elif re.match(r'(?i)^HKR,,5GhzAutoUse40MHz\s*,', s):
             l, changes = '  HKR,,5GhzAutoUse40MHz  ,0x00010001      ,0      ; goyawifi: no 5 GHz radio', changes + 1
+        elif re.match(r'(?i)^HKR,,Dot11nAggMode\s*,', s):
+            l, changes = 'HKR,,Dot11nAggMode  ,0x00010001      ,0      ; goyawifi: no A-MPDU (rejected on the 8777)', changes + 1
         elif re.match(r'(?i)^HKR,,HTTxRxStream\s*,', s):
             l, changes = 'HKR,,HTTxRxStream,  0x00010001, 0     ; goyawifi: 1x1', changes + 1
         elif re.match(r'(?i)^\s*MRVL_SD8797_DESC_STR\s*=', l):
@@ -114,7 +118,7 @@ def main():
 
     body = '\r\n'.join(out_lines)
     for must in ('goyawifi.cat', 'PID_9131&FN_1', '%12%\\goyawifi.sys', 'mv14sxx97.bin', 'HKR,,Band  ,0x00010001      ,3',
-                 'HKR,,5GhzAutoUse40MHz  ,0x00010001      ,0'):
+                 'HKR,,5GhzAutoUse40MHz  ,0x00010001      ,0', 'HKR,,Dot11nAggMode  ,0x00010001      ,0'):
         if must not in body:
             sys.exit(f'INF transform incomplete: "{must}" missing')
     if 'PID_9129' in body or 'netvwifibus' in body.lower() or 'mwls97w8arm.sys' in body:
