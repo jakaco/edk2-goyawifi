@@ -684,6 +684,52 @@ static VOID GsRxDataShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
     }
 }
 
+/* Data to send (function 1 data ports, write): le16 length, le16 type 0, then the TxPD: u8 bss_type, u8 bss_num,
+   le16 tx_pkt_length, le16 tx_pkt_offset, le16 tx_pkt_type, le32 tx_control, u8 priority, u8 flags, u8 delay,
+   u8 [15]. In Native Wi-Fi mode goyawifi sends the 802.11 frame from Windows and sets TxPD byte 15 to 1 for the
+   8797 Windows firmware; the 8777 FP66 firmware sends Ethernet frames. Each 802.11 data frame with an LLC/SNAP
+   header becomes DA, SA, type + payload in place (ending where it ended), byte 15 becomes 0. */
+static volatile LONG gGsTxShimLog;
+
+static VOID GsTxDataShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
+{
+    ULONG off = 0, plen, t, po, pl, hl, f, e, i;
+    UCHAR da[6], sa[6];
+    if (!(arg >> 31) || ((arg >> 28) & 7) != 1 || ((arg >> 9) & 0x1FFFF) <= 0x10000) return;
+    while (off + 20 <= len) {
+        plen = (ULONG)(va[off] | (va[off + 1] << 8));
+        if (plen < 20 || plen > len - off) break;
+        t = off + 4;                                   /* TxPD */
+        pl = (ULONG)(va[t + 2] | (va[t + 3] << 8));
+        po = (ULONG)(va[t + 4] | (va[t + 5] << 8));
+        f = t + po;
+        if (va[off + 2] == 0 && va[off + 3] == 0 && va[t + 15] == 1 && po >= 16 && pl >= 24 + 8 && f + pl <= off + plen) {
+            hl = 24 + ((va[f + 1] & 3) == 3 ? 6 : 0) + ((va[f] & 0x80) ? 2 : 0) + (((va[f] & 0x80) && (va[f + 1] & 0x80)) ? 4 : 0);
+            if ((va[f] & 0x0C) == 0x08 && (va[f + 1] & 3) != 3 && pl >= hl + 8 &&
+                va[f + hl] == 0xAA && va[f + hl + 1] == 0xAA && va[f + hl + 2] == 0x03 &&
+                va[f + hl + 3] == 0 && va[f + hl + 4] == 0 && va[f + hl + 5] == 0) {
+                for (i = 0; i < 6; i++) {
+                    da[i] = va[f + ((va[f + 1] & 1) ? 16 : 4) + i];             /* ToDS: DA is address 3 */
+                    sa[i] = va[f + ((va[f + 1] & 2) ? 16 : 10) + i];
+                }
+                e = f + hl - 6;                                              /* the type stays where it is */
+                RtlCopyMemory(va + e, da, 6);
+                RtlCopyMemory(va + e + 6, sa, 6);
+                po += hl - 6; pl -= hl - 6;
+                va[t + 2] = (UCHAR)pl; va[t + 3] = (UCHAR)(pl >> 8);
+                va[t + 4] = (UCHAR)po; va[t + 5] = (UCHAR)(po >> 8);
+                va[t + 15] = 0;
+                if (InterlockedIncrement(&gGsTxShimLog) <= 20)
+                    DbgPrint("goyasdio: f%u tx 802.11 frame -> Ethernet: type %02x%02x, offset %u, length %u\n",
+                             p->Fn, va[e + 12], va[e + 13], po, pl);
+            } else if (InterlockedIncrement(&gGsTxShimLog) <= 20) {
+                DbgPrint("goyasdio: f%u tx 802.11 frame left alone: fc %02x%02x length %u\n", p->Fn, va[f], va[f + 1], pl);
+            }
+        }
+        off += (plen + 255) & ~255UL;
+    }
+}
+
 static NTSTATUS GsDeviceCommand(PGS_PDO p, PGS_REQUEST_PACKET r)
 {
     PGS_FDO f = p->Fdo;
@@ -701,6 +747,7 @@ static NTSTATUS GsDeviceCommand(PGS_PDO p, PGS_REQUEST_PACKET r)
         va = (PUCHAR)MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority);
         if (!va) return STATUS_INSUFFICIENT_RESOURCES;
         fn = (arg >> 28) & 7;
+        GsTxDataShim(p, arg, va, len);
         st = SdioCmd53(&f->Sd, arg, va, len, f->Sd.FnBlk[fn], &r5);
         if (st == SD_OK) {
             r->Information = len;
