@@ -256,6 +256,24 @@ echo --- System log, errors and warnings, newest first >> "%P%"
 wevtutil qe "%~dp0setuplogs\cpudiag\System.evtx" /lf:true /q:"*[System[(Level<=3)]]" /f:text /c:80 /rd:true >> "%P%" 2>&1
 :nocpudiag
 
+rem ---- noautoreboot.flag (0 or 1): Windows RT's restart after a stop (CrashControl\AutoReboot).
+rem 0 keeps the stop screen up, with its parameters (DisplayParameters), for stops that happen
+rem before goyabug loads. ----
+if not exist "%~dp0noautoreboot.flag" goto nonoautoreboot
+set NAR=
+set /p NAR=<"%~dp0noautoreboot.flag"
+move /y "%~dp0noautoreboot.flag" "%~dp0noautoreboot.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- Windows RT AutoReboot %NAR% in %WIN% >> "%OUT%"
+if not defined WIN goto nonoautoreboot
+reg load HKLM\GOYACC %WIN%\Windows\System32\config\SYSTEM >> "%OUT%" 2>&1
+reg add HKLM\GOYACC\ControlSet001\Control\CrashControl /v AutoReboot /t REG_DWORD /d %NAR:~0,1% /f >> "%OUT%" 2>&1
+reg add HKLM\GOYACC\ControlSet001\Control\CrashControl /v DisplayParameters /t REG_DWORD /d 1 /f >> "%OUT%" 2>&1
+reg query HKLM\GOYACC\ControlSet001\Control\CrashControl >> "%OUT%" 2>&1
+reg unload HKLM\GOYACC >> "%OUT%" 2>&1
+:nonoautoreboot
+
 rem ---- cpus.flag (1 or 2): how many CPUs Windows RT may use. 1 = bcdedit onecpu on (what the
 rem installer sets), 2 = onecpu removed, for firmware that leaves CPU1 waiting in its ACPI parking
 rem page (MADT CPU1 enabled). The entry is the one in winrt.flag / winrt.done, else {default}. ----
