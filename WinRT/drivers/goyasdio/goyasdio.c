@@ -1097,8 +1097,7 @@ static NTSTATUS GsDispatchOther(PDEVICE_OBJECT d, PIRP irp)
     s = (sp->MajorFunction == IRP_MJ_CREATE || sp->MajorFunction == IRP_MJ_CLOSE || sp->MajorFunction == IRP_MJ_CLEANUP)
         ? STATUS_SUCCESS : (sp->MajorFunction == IRP_MJ_SYSTEM_CONTROL ? irp->IoStatus.Status : STATUS_INVALID_DEVICE_REQUEST);
     if (s == STATUS_INVALID_DEVICE_REQUEST && InterlockedIncrement(&gTraceOther) <= 40)
-        DbgPrint("goyasdio: %s got IRP major %02x minor %02x: rejected
-", c->IsFdo ? "bus" : "function", sp->MajorFunction, sp->MinorFunction);
+        DbgPrint("goyasdio: %s got IRP major %02x minor %02x: rejected\n", c->IsFdo ? "bus" : "function", sp->MajorFunction, sp->MinorFunction);
     irp->IoStatus.Status = s;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
     return s;
