@@ -166,6 +166,19 @@ if "%WRN%"=="0" echo no Net class key with PID_9131 found >> "%OUT%"
 reg unload HKLM\GOYAREG >> "%OUT%" 2>&1
 :nowifireg
 
+rem ---- desktop.flag: copy .\desktop\*.lnk (made by WinRT\install\make-desktop-links.ps1) to the Public
+rem Desktop of the Windows RT partition, so every user gets them. ----
+if not exist "%~dp0desktop.flag" goto nodesktop
+move /y "%~dp0desktop.flag" "%~dp0desktop.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- desktop: shortcuts to %WIN%\Users\Public\Desktop >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto nodesktop)
+if not exist "%WIN%\Users\Public\Desktop" mkdir "%WIN%\Users\Public\Desktop"
+xcopy /y "%~dp0desktop\*.lnk" "%WIN%\Users\Public\Desktop\" >> "%OUT%" 2>&1
+dir /b "%WIN%\Users\Public\Desktop" >> "%OUT%" 2>&1
+:nodesktop
+
 rem ---- setuplogs.flag: copy Windows Setup's logs from the Windows RT partition to .\setuplogs\ ----
 if not exist "%~dp0setuplogs.flag" goto nosetuplogs
 move /y "%~dp0setuplogs.flag" "%~dp0setuplogs.done" >nul
