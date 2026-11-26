@@ -71,6 +71,23 @@ set DRV=%WIN%\Windows\System32\drivers
 for %%f in ("%~dp0install\*.sys") do call :instdrv %%~nf
 :noinstall
 
+rem ---- halext.flag: replace the timer HAL extension, System32\HalExtMmpTimer.dll on the Windows RT
+rem partition, with .\install\HalExtMmpTimer.dll (the first replaced copy is kept as .dll.old) and
+rem byte-compare it. ----
+if not exist "%~dp0halext.flag" goto nohalext
+move /y "%~dp0halext.flag" "%~dp0halext.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- HAL extension into %WIN% >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto nohalext)
+if not exist "%~dp0install\HalExtMmpTimer.dll" (echo no install\HalExtMmpTimer.dll >> "%OUT%" & goto nohalext)
+set HX=%WIN%\Windows\System32\HalExtMmpTimer.dll
+if exist %HX% if not exist %HX%.old copy /b /y %HX% %HX%.old >nul
+copy /b /y "%~dp0install\HalExtMmpTimer.dll" %HX% >> "%OUT%" 2>&1
+"%~dp0goyacmp.exe" "%~dp0install\HalExtMmpTimer.dll" %HX% >> "%OUT%" 2>&1
+echo System32\HalExtMmpTimer.dll compare exit code %ERRORLEVEL% >> "%OUT%"
+:nohalext
+
 rem ---- adddrv.flag: add every driver package in .\adddrv\ (NAME.inf + .sys + .cat) to the Windows RT
 rem install's driver store with DISM, for a device that has no driver yet (install.flag only replaces
 rem the files of drivers that are installed already). Windows installs it when it finds the device. ----
