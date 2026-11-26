@@ -191,6 +191,12 @@ static VOID TraceExtra(ULONG N, ULONG Value)
     x = GtHex(fb, x, y, N, 1, 0x00808080, 0x00202020);
     GtHex(fb, x, y, Value, 8, 0x0000FFFF, 0x00202020);
 }
+/* state changes to the boot log (goyalog), stamped with the poll tick in seconds; capped so a dead chip
+   cannot flood it */
+static ULONG gLogLines, gLostTick, gLostRun;
+#define TLOG(E, fmt, ...) do { if (gLogLines < 300) { gLogLines++; \
+    DbgPrint("goyatouch: %u.%02u s " fmt "\n", (E)->Tick / (1000 / POLL_MS), (E)->Tick % (1000 / POLL_MS) * POLL_MS / 10, __VA_ARGS__); } } while (0)
+
 static BOOLEAN gChipOk;
 static KEVENT gHbStop;
 static PKTHREAD gHbThread;
@@ -567,13 +573,19 @@ static VOID PollOnce(DEV_EXT *E)
     }
     intLow = (BOOLEAN)(gGpio != NULL && !(READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR)) & GPIO94_BIT));
     if (intLow) gIntLow++;
-    if (!NT_SUCCESS(ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw)))) {
+    {
+    NTSTATUS rs = ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw));
+    if (!NT_SUCCESS(rs)) {
+        TLOG(E, "status read failed %08x (ISR %04x, lines %u), last interrupt %u ticks ago, finger %s - re-init",
+             (ULONG)rs, gLastIsr & 0xFFFF, gLastIbmr & 3, E->Tick - E->LastAlive, E->Down ? "down" : "up");
+        gLostTick = E->Tick;
         gReadFails++;
         gWatchdog = (gWatchdog & 0xFFFF8000) | ((gWatchdog + 1) & 0x7FFF);
         ReleaseButton(E);
         E->Initialized = FALSE;                             /* chip lost: re-initialise */
         E->InitTries = 0;
         return;
+    }
     }
     status = (USHORT)(raw[0] | (raw[1] << 8));
     if (intLow || status != 0) E->LastAlive = E->Tick;      /* an interrupt (touch or heartbeat) */
@@ -631,7 +643,7 @@ static VOID PowerEventOpen(VOID)
     UNICODE_STRING n;
     RtlInitUnicodeString(&n, L"\\BaseNamedObjects\\GoyaTouchPowerCycle");
     gPwrEv = IoCreateNotificationEvent(&n, &gPwrEvH);
-    if (gPwrEv != NULL) KeClearEvent(gPwrEv);
+    if (gPwrEv != NULL) { KeClearEvent(gPwrEv); DbgPrint("goyatouch: GoyaTouchPowerCycle event open\n"); }
 }
 
 /* after a failed init: count NAKs in a row and ask goyabatt for a power cycle */
@@ -640,6 +652,7 @@ static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
     if (gPwrPending && !KeReadStateEvent(gPwrEv)) {
         gPwrPending = FALSE;
         gPwr += 0x10000;                                            /* answered */
+        TLOG(E, "goyabatt power-cycled the supply (%u)", (gPwr >> 16) & 0xFF);
         E->InitTries = 0;                                           /* back to fast retries */
     }
     if (st != STATUS_NO_SUCH_DEVICE) { gNakRun = 0; return; }
@@ -649,6 +662,7 @@ static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
         gPwrTick = Tick ? Tick : 1;
         gPwrPending = TRUE;
         gPwr += 0x1000000;
+        TLOG(E, "%u NAKs in a row: asking goyabatt for a power cycle", gNakRun);
         KeSetEvent(gPwrEv, IO_NO_INCREMENT, FALSE);
     }
 }
@@ -666,6 +680,9 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
             st = ZInitChip(E);
             gInit = (ULONG)st;
             if (!NT_SUCCESS(st)) {
+                if (gLostRun == 0 || gLostRun % 10 == 0)
+                    TLOG(E, "init try %u failed %08x (ISR %04x, lines %u)", E->InitTries, (ULONG)st, gLastIsr & 0xFFFF, gLastIbmr & 3);
+                gLostRun++;
                 /* a stuck unit or bus (timeout / bus error, not a plain NAK): reset the unit through the
                    APBC register and clock the bus free before the next try */
                 if (st == STATUS_IO_TIMEOUT || st == STATUS_IO_DEVICE_ERROR) {
@@ -681,6 +698,10 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
                 gNakRun = 0;
             }
             E->Initialized = (BOOLEAN)NT_SUCCESS(st);
+            if (E->Initialized) {
+                TLOG(E, "chip answering (init try %u, %u failed, %u ticks after it was lost)", E->InitTries, gLostRun, Tick - gLostTick);
+                gLostRun = 0;
+            }
             if (E->Initialized) { E->LastAlive = E->LastProbe = Tick; E->InitTries = 0; E->HbSeen = FALSE; gWatchdog &= ~0x8000UL; }
         }
         return;
@@ -699,6 +720,9 @@ static VOID PollStep(DEV_EXT *E, ULONG Tick)
         if (ok && !(E->HbSeen && !E->Down && Tick - E->LastAlive > WD_LOCK_TICKS)) {
             gWatchdog = (gWatchdog & 0xFF00FFFF) | ((gWatchdog + 0x10000) & 0x00FF0000);   /* probe passed */
         } else {
+            TLOG(E, "watchdog: INT_ENABLE %04x (%s), heartbeat %s, last interrupt %u ticks ago - re-init",
+                 ie, ok ? "kept" : "lost/failed", E->HbSeen ? "seen" : "never", Tick - E->LastAlive);
+            gLostTick = Tick;
             gWatchdog = (gWatchdog & 0x00FFFFFF) | ((gWatchdog + 0x1000000) & 0xFF000000); /* re-init */
             ReleaseButton(E);
             E->Initialized = FALSE;
