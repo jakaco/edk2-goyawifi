@@ -100,6 +100,29 @@ if not defined WIN (echo no Windows partition found >> "%OUT%" & goto noadddrv)
 for %%f in ("%~dp0adddrv\*.inf") do call :adddrv "%%f"
 :noadddrv
 
+rem ---- redrv.flag: one hardware ID per line (e.g. ACPI\MRVL0009). Every device instance of it in the
+rem offline install loses its Service value and gets ConfigFlags 0x20 (CONFIGFLAG_REINSTALL), so Windows
+rem picks the best driver from its driver store again at the next boot (after packages were added with
+rem DISM on a PC, add-drivers-sd.cmd). Undoes a :regdrv binding. The Enum keys are only writable as
+rem SYSTEM, which WinPE is. The SYSTEM hive is copied to .\redrv-SYSTEM.before first. ----
+if not exist "%~dp0redrv.flag" goto noredrv
+move /y "%~dp0redrv.flag" "%~dp0redrv.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SYSTEM if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- redrv: reinstall drivers for the IDs in redrv.done on %WIN% >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto noredrv)
+copy /b /y %WIN%\Windows\System32\config\SYSTEM "%~dp0redrv-SYSTEM.before" >> "%OUT%" 2>&1
+if errorlevel 1 (echo hive backup failed, registry not changed >> "%OUT%" & goto noredrv)
+reg load HKLM\GOYAREG %WIN%\Windows\System32\config\SYSTEM >> "%OUT%" 2>&1
+if errorlevel 1 (echo hive load failed >> "%OUT%" & goto noredrv)
+set CS=1
+for /f "tokens=3" %%v in ('reg query HKLM\GOYAREG\Select /v Current ^| find "Current"') do set /a CS=%%v
+set CS=000%CS%
+set RK=HKLM\GOYAREG\ControlSet%CS:~-3%
+for /f "usebackq eol=; delims=" %%h in ("%~dp0redrv.done") do call :redrvid "%%h"
+reg unload HKLM\GOYAREG >> "%OUT%" 2>&1
+:noredrv
+
 rem ---- setuplogs.flag: copy Windows Setup's logs from the Windows RT partition to .\setuplogs\ ----
 if not exist "%~dp0setuplogs.flag" goto nosetuplogs
 move /y "%~dp0setuplogs.flag" "%~dp0setuplogs.done" >nul
@@ -391,6 +414,23 @@ echo %RDEV% device instance(s) pointed at %RN% >> "%OUT%"
 :regdone
 reg query %RK%\Services\%RN% /s >> "%OUT%" 2>&1
 reg unload HKLM\GOYAREG >> "%OUT%" 2>&1
+goto :eof
+
+rem ---- :redrvid HWID - every instance of one hardware ID (see redrv.flag) ----
+:redrvid
+echo %~1 >> "%OUT%"
+reg query "%RK%\Enum\%~1" >nul 2>&1
+if errorlevel 1 (echo   not in the registry >> "%OUT%" & goto :eof)
+for /f "delims=" %%i in ('reg query "%RK%\Enum\%~1" ^| find "HKEY_"') do call :redrvdev "%%i"
+goto :eof
+
+:redrvdev
+reg query "%~1" /v HardwareID >nul 2>&1
+if errorlevel 1 goto :eof
+echo   %~1 >> "%OUT%"
+reg query "%~1" /v Service >> "%OUT%" 2>&1
+reg delete "%~1" /v Service /f >> "%OUT%" 2>&1
+reg add "%~1" /v ConfigFlags /t REG_DWORD /d 32 /f >> "%OUT%" 2>&1
 goto :eof
 
 rem ---- :regdev KEY - one device instance key (subkeys without a HardwareID value are skipped) ----
