@@ -462,9 +462,14 @@ ReportWindowsStop (
   UINT32            Lfanew;
   volatile UINT32   *Bc;
   UINTN             Found;
+  UINTN             Images;
 
-  Found = 0;
-  for (Addr = 0x01000000; Addr + NT8520_SIZE <= 0x40000000; Addr += EFI_PAGE_SIZE) {
+  //
+  // From the second page (page 0 may be unmapped): winload can place the kernel in the first 16 MB.
+  //
+  Found  = 0;
+  Images = 0;
+  for (Addr = EFI_PAGE_SIZE; Addr + NT8520_SIZE <= 0x40000000; Addr += EFI_PAGE_SIZE) {
     if (*(volatile UINT16 *)Addr != 0x5A4D) {
       continue;
     }
@@ -473,6 +478,10 @@ ReportWindowsStop (
     if ((Lfanew > 0x800) || (*(volatile UINT32 *)(Addr + Lfanew) != 0x00004550) ||
         (*(volatile UINT32 *)(Addr + Lfanew + 8) != NT8520_TIMESTAMP))
     {
+      if ((Lfanew <= 0x800) && (*(volatile UINT32 *)(Addr + Lfanew) == 0x00004550)) {
+        Images++;
+      }
+
       continue;
     }
 
@@ -485,7 +494,7 @@ ReportWindowsStop (
   }
 
   if (Found == 0) {
-    Log ("previous session: no Windows kernel image left in DRAM\n");
+    Log ("previous session: no Windows kernel image left in DRAM (%u other PE images)\n", (UINT32)Images);
   }
 }
 
