@@ -488,6 +488,12 @@ ReportWindowsStop (
     Bc = (volatile UINT32 *)(Addr + NT8520_BUGCHECKDATA);
     Log ("previous session: Windows kernel image at 0x%08x, KiBugCheckData %08x %08x %08x %08x %08x\n",
       (UINT32)Addr, Bc[0], Bc[1], Bc[2], Bc[3], Bc[4]);
+
+    //
+    // Reported once: wipe the signature so that the next boot only finds the next session's kernel.
+    //
+    *(volatile UINT16 *)Addr = 0;
+    WriteBackDataCacheRange ((VOID *)Addr, sizeof (UINT16));
     if (++Found == 4) {
       break;
     }
@@ -546,9 +552,10 @@ ReportPreviousSession (
     Log ("previous session: no timer breadcrumbs\n");
   }
 
-  if (Mb[MB_STATE / 4] == STATE_OS_JUMPED) {
-    ReportWindowsStop ();
-  }
+  //
+  // Also when CPU1 never entered the OS: a Windows boot can stop before the HAL starts processors.
+  //
+  ReportWindowsStop ();
 }
 
 /**
