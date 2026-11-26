@@ -23,6 +23,7 @@
 //                  +28 wake-ups while parked for the OS
 //   CPU0 -> CPU1:  +40 command (1 park, 3 park for the OS, other: ping)
 //                  +44 argument     +48 GICC_CTLR value for the OS parking loop
+//                  +4C diagnostic register value for the OS entry
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 //
@@ -40,6 +41,8 @@
 #define MB_CMD        0x40
 #define MB_ARG        0x44
 #define MB_GICCCTLR   0x48
+#define MB_DIAG       0x4C          // CPU0's diagnostic register, for the OS entry
+#define SCU_INVALIDATE 0x0C         // SCU Invalidate All in Secure State
 
 #define PP_CPU_ID     0x000         // relative to the page
 #define PP_JUMP       0x008
@@ -225,6 +228,23 @@ Pxa988Cpu1OsLoop:
   mov     r1, #0
   str     r1, [r0, #GICC_CTLR]
   str     r1, [r0, #GICC_PMR]
+  dsb
+  //
+  // Cortex-A9 errata workarounds live in the diagnostic register, which S-Boot
+  // set on CPU0 only: CPU0's value (from the mailbox, read by Pxa988SmpDxe)
+  //
+  ldr     r1, [r4, #MB_DIAG]
+  mcr     p15, 0, r1, c15, c0, 1
+  isb
+  //
+  // The SCU keeps a copy of each core's L1 data-cache tags. This core's L1 is
+  // invalid and its caches are off: invalidate its SCU tags too (all four
+  // ways, bits [7:4] for CPU1), before the OS turns its cache on.
+  //
+  movw    r1, #0xE000
+  movt    r1, #0xD1DF               // SCU
+  mov     r3, #0xF0
+  str     r3, [r1, #SCU_INVALIDATE]
   dsb
   mov     r1, #4
   str     r1, [r4, #MB_STATE]

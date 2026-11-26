@@ -53,6 +53,7 @@
 #define MB_CMD          0x40
 #define MB_ARG          0x44
 #define MB_GICCCTLR     0x48
+#define MB_DIAG         0x4C            // CPU0's Cortex-A9 diagnostic register, set on CPU1 at the OS entry
 #define ALIVE_MAGIC     0xA9A9C0DE
 
 #define STATE_RUNNING   1
@@ -534,12 +535,24 @@ Cpu1ParkForOs (
   )
 {
   UINT32  GiccCtlr;
+  UINT32  Diag;
 
   //
   // CPU1's GIC CPU interface is set up like CPU0's (the register is banked)
   //
   GiccCtlr = MmioRead32 (PXA988_GICC_BASE);
   MbWrite (MB_GICCCTLR, GiccCtlr);
+
+  //
+  // Cortex-A9 diagnostic register (errata workarounds S-Boot set on CPU0):
+  // CPU1 sets the same value before it jumps to the OS
+  //
+  __asm__ volatile ("mrc p15, 0, %0, c15, c0, 1" : "=r" (Diag));
+  MbWrite (MB_DIAG, Diag);
+  Log ("CPU0 diagnostic register 0x%08x, SCU diagnostic 0x%08x, power 0x%08x\n",
+    Diag,
+    MmioRead32 (PXA988_SCU_BASE + 0x30),
+    MmioRead32 (PXA988_SCU_BASE + 0x08));
   MbWrite (MB_CMD, CMD_OS_PARK);
   SendEvent ();
   if (!MbWaitFor (MB_STATE, STATE_OS_PARKED, 100)) {
