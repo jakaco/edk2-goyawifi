@@ -634,6 +634,31 @@ static VOID GsCmdRespShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
     }
 }
 
+/* Received data (function 1 data ports 0x10001-0x1FFFF, read). Each packet: le16 length, le16 type (0 = data),
+   then the RxPD: u8 bss_type, u8 bss_num, le16 rx_pkt_length, le16 rx_pkt_offset, le16 rx_pkt_type, ... The 8777
+   FP66 firmware marks ordinary received frames rx_pkt_type 2 (with its 802.11 header copied in front of the
+   802.3 frame at rx_pkt_offset); the 8797 driver takes 2 for a wake-up/non-data packet and Windows never
+   answers WPA2 message 1. Type 2 becomes 0 (802.3 data at rx_pkt_offset). Aggregated reads hold several
+   packets, each padded to the 256-byte block. */
+static volatile LONG gGsRxShimLog;
+
+static VOID GsRxDataShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
+{
+    ULONG off = 0, plen;
+    if ((arg >> 31) || ((arg >> 28) & 7) != 1 || ((arg >> 9) & 0x1FFFF) <= 0x10000) return;
+    while (off + 12 <= len) {
+        plen = (ULONG)(va[off] | (va[off + 1] << 8));
+        if (plen < 12 || plen > len - off) break;
+        if (va[off + 2] == 0 && va[off + 3] == 0 && va[off + 10] == 2 && va[off + 11] == 0) {
+            va[off + 10] = 0;
+            if (InterlockedIncrement(&gGsRxShimLog) <= 20)
+                DbgPrint("goyasdio: f%u rx packet type 2 -> 0 (length %u, offset %u)\n", p->Fn,
+                         (ULONG)(va[off + 6] | (va[off + 7] << 8)), (ULONG)(va[off + 8] | (va[off + 9] << 8)));
+        }
+        off += (plen + 255) & ~255UL;
+    }
+}
+
 static NTSTATUS GsDeviceCommand(PGS_PDO p, PGS_REQUEST_PACKET r)
 {
     PGS_FDO f = p->Fdo;
@@ -655,6 +680,7 @@ static NTSTATUS GsDeviceCommand(PGS_PDO p, PGS_REQUEST_PACKET r)
         if (st == SD_OK) {
             r->Information = len;
             GsCmdRespShim(p, arg, va, len);
+            GsRxDataShim(p, arg, va, len);
         }
     } else {
         DbgPrint("goyasdio: CMD%u from function %u not supported\n", cmd, p->Fn);
