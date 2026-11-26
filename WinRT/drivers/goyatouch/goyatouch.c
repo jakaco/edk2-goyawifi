@@ -154,6 +154,7 @@ typedef struct _DEV_EXT {
     ULONG          LastAlive;       /* Tick of the last sign of life from the chip */
     ULONG          LastProbe;       /* Tick of the last register probe by the watchdog */
     BOOLEAN        HbSeen;          /* the chip sent its periodic (heartbeat) interrupt since the last init */
+    ULONG          ReadFailRun;     /* status reads in a row that failed with INT low */
 } DEV_EXT;
 
 /* status shown by the heartbeat thread */
@@ -573,11 +574,20 @@ static VOID PollOnce(DEV_EXT *E)
     }
     intLow = (BOOLEAN)(gGpio != NULL && !(READ_REGISTER_ULONG((PULONG)(gGpio + GPIO94_BANK + GPIO_GPLR)) & GPIO94_BIT));
     if (intLow) gIntLow++;
+    /* Talk to the chip only when it asks (INT low), like the vendor driver. Between scans the chip
+       does not acknowledge its address; reading the status on every poll regardless made it look lost
+       every 10-45 s, and each "recovery" (re-init, recalibration) was a visible touch lag. */
+    if (gGpio != NULL && !intLow) return;
     {
     NTSTATUS rs = ZReadData(E, Z_POINT_STATUS, raw, sizeof(raw));
     if (!NT_SUCCESS(rs)) {
-        TLOG(E, "status read failed %08x (ISR %04x, lines %u), last interrupt %u ticks ago, finger %s - re-init",
-             (ULONG)rs, gLastIsr & 0xFFFF, gLastIbmr & 3, E->Tick - E->LastAlive, E->Down ? "down" : "up");
+        /* INT stays low until CLEAR_INT, so the next poll simply tries again: re-init only when the
+           chip keeps refusing */
+        TLOG(E, "status read failed %08x (ISR %04x, lines %u), %u in a row, last interrupt %u ticks ago, finger %s%s",
+             (ULONG)rs, gLastIsr & 0xFFFF, gLastIbmr & 3, E->ReadFailRun + 1, E->Tick - E->LastAlive,
+             E->Down ? "down" : "up", E->ReadFailRun + 1 >= 3 ? " - re-init" : "");
+        if (++E->ReadFailRun < 3) return;
+        E->ReadFailRun = 0;
         gLostTick = E->Tick;
         gReadFails++;
         gWatchdog = (gWatchdog & 0xFFFF8000) | ((gWatchdog + 1) & 0x7FFF);
@@ -587,6 +597,7 @@ static VOID PollOnce(DEV_EXT *E)
         return;
     }
     }
+    E->ReadFailRun = 0;
     status = (USHORT)(raw[0] | (raw[1] << 8));
     if (intLow || status != 0) E->LastAlive = E->Tick;      /* an interrupt (touch or heartbeat) */
     gRaw4 = ((ULONG)raw[0] << 24) | ((ULONG)raw[1] << 16) | ((ULONG)raw[2] << 8) | raw[3];
