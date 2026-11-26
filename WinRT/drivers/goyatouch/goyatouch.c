@@ -624,6 +624,16 @@ static VOID PollOnce(DEV_EXT *E)
     E->LastY = y;
 }
 
+/* \BaseNamedObjects only exists once the session manager has run; DriverEntry of a boot-start driver
+   is too early, so the poll thread keeps trying */
+static VOID PowerEventOpen(VOID)
+{
+    UNICODE_STRING n;
+    RtlInitUnicodeString(&n, L"\\BaseNamedObjects\\GoyaTouchPowerCycle");
+    gPwrEv = IoCreateNotificationEvent(&n, &gPwrEvH);
+    if (gPwrEv != NULL) KeClearEvent(gPwrEv);
+}
+
 /* after a failed init: count NAKs in a row and ask goyabatt for a power cycle */
 static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
 {
@@ -646,6 +656,7 @@ static VOID PowerCycleCheck(DEV_EXT *E, NTSTATUS st, ULONG Tick)
 static VOID PollStep(DEV_EXT *E, ULONG Tick)
 {
     E->Tick = Tick;
+    if (gPwrEv == NULL && Tick % 500 == 0) PowerEventOpen();
     if (gPwrPending && !KeReadStateEvent(gPwrEv)) PowerCycleCheck(E, STATUS_SUCCESS, Tick);
     if (!E->Initialized) {
         /* every 0.5 s for the first 20 tries, then every 5 s (a missing chip costs CPU: polled I2C) */
@@ -995,12 +1006,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT Driver, PUNICODE_STRING RegistryPath)
     Driver->DriverUnload = DriverUnload;
 
     gStage = 0x00;
-    {
-        UNICODE_STRING n;
-        RtlInitUnicodeString(&n, L"\\BaseNamedObjects\\GoyaTouchPowerCycle");
-        gPwrEv = IoCreateNotificationEvent(&n, &gPwrEvH);
-        if (gPwrEv != NULL) KeClearEvent(gPwrEv);
-    }
     KeInitializeEvent(&gHbStop, NotificationEvent, FALSE);
     if (NT_SUCCESS(PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL, HeartbeatThread, NULL))) {
         ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)&gHbThread, NULL);

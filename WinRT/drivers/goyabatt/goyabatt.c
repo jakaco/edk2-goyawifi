@@ -248,6 +248,7 @@ static VOID GbTouchPower(PGOYA_BATT B)
         BcPmWrite(c, PM_POWER_PAGE, PM_LDO_ENA1_1, (UCHAR)(ena | 1));
         B->LdoKnown = FALSE;
     }
+    if (B->TouchEv == NULL) GbTouchEventOpen(B);
     if (B->TouchEv != NULL && KeReadStateEvent(B->TouchEv)) {
         B->LdoCycles++;
         rc = BcPmWrite(c, PM_POWER_PAGE, PM_LDO_ENA1_1, (UCHAR)(ena & ~1));
@@ -261,13 +262,18 @@ static VOID GbTouchPower(PGOYA_BATT B)
     }
 }
 
+/* \BaseNamedObjects only exists once the session manager has run: a boot-start driver has to retry */
 static VOID GbTouchEventOpen(PGOYA_BATT B)
 {
     UNICODE_STRING n;
+    static ULONG tries;
     RtlInitUnicodeString(&n, L"\\BaseNamedObjects\\GoyaTouchPowerCycle");
+    tries++;
     B->TouchEv = IoCreateNotificationEvent(&n, &B->TouchEvH);
-    if (B->TouchEv != NULL) KeClearEvent(B->TouchEv);
-    else DbgPrint("goyabatt: no GoyaTouchPowerCycle event\n");
+    if (B->TouchEv != NULL) {
+        KeClearEvent(B->TouchEv);
+        DbgPrint("goyabatt: GoyaTouchPowerCycle event open (try %u)\n", tries);
+    }
 }
 
 /* ================= polling ================= */
