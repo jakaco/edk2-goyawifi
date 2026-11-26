@@ -19,7 +19,9 @@ $links = @(
     @{ Name = 'On-Screen Keyboard';  Target = "$sys\osk.exe";      Args = '';                 Icon = "$sys\osk.exe,0" },
     @{ Name = 'Command Prompt';      Target = "$sys\cmd.exe";      Args = '';                 Icon = "$sys\cmd.exe,0" },
     @{ Name = 'Network Connections'; Target = "$sys\control.exe";  Args = 'ncpa.cpl';         Icon = "$sys\netshell.dll,0" },
-    @{ Name = 'Control Panel';       Target = "$sys\control.exe";  Args = '';                 Icon = "$sys\control.exe,0" }
+    @{ Name = 'Control Panel';       Target = "$sys\control.exe";  Args = '';                 Icon = "$sys\control.exe,0" },
+    @{ Name = 'Restart';             Target = "$sys\shutdown.exe"; Args = '/r /t 0';          Icon = "$sys\shell32.dll,238" },
+    @{ Name = 'Power Off';           Target = "$sys\shutdown.exe"; Args = '/s /t 0';          Icon = "$sys\shell32.dll,27" }
 )
 $sh = New-Object -ComObject WScript.Shell
 foreach ($l in $links) {
