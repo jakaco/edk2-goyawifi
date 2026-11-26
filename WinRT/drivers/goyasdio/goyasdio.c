@@ -489,6 +489,34 @@ static NTSTATUS GsSetProperty(PGS_PDO p, ULONG prop, PVOID buf, ULONG len)
     return GsStatus(st);
 }
 
+/* Firmware compatibility shim. The Surface RT driver (FP62 MLAN, written for the 8797) sends host commands
+   the SM-T110's 8777 FP66 firmware does not implement; it answers them with result 2 (not supported) and the
+   driver then fails its initialization (Code 10). For the commands listed here a "not supported" response
+   read from the command port is reported as success instead. SDIO data-port packet: le16 length, le16 type
+   (1 = command response), then the command header: le16 command | 0x8000, le16 size, le16 seq, le16 result. */
+static const USHORT gGsOptionalCmds[] = { 0x00d4 };
+static volatile LONG gGsShimLog;
+
+static VOID GsCmdRespShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
+{
+    USHORT type, id, res;
+    ULONG i;
+    if ((arg >> 31) || ((arg >> 28) & 7) != 1 || ((arg >> 9) & 0x1FFFF) < 0x10000 || len < 12) return;
+    type = (USHORT)(va[2] | (va[3] << 8));
+    id = (USHORT)(va[4] | (va[5] << 8));
+    res = (USHORT)(va[10] | (va[11] << 8));
+    if (type != 1 || !(id & 0x8000) || res != 2) return;
+    for (i = 0; i < RTL_NUMBER_OF(gGsOptionalCmds); i++) {
+        if ((id & 0x7FFF) == gGsOptionalCmds[i]) {
+            va[10] = 0;
+            va[11] = 0;
+            if (InterlockedIncrement(&gGsShimLog) <= 20)
+                DbgPrint("goyasdio: f%u firmware does not support command %04x: reported as done\n", p->Fn, id & 0x7FFF);
+            return;
+        }
+    }
+}
+
 static NTSTATUS GsDeviceCommand(PGS_PDO p, PGS_REQUEST_PACKET r)
 {
     PGS_FDO f = p->Fdo;
@@ -507,7 +535,10 @@ static NTSTATUS GsDeviceCommand(PGS_PDO p, PGS_REQUEST_PACKET r)
         if (!va) return STATUS_INSUFFICIENT_RESOURCES;
         fn = (arg >> 28) & 7;
         st = SdioCmd53(&f->Sd, arg, va, len, f->Sd.FnBlk[fn], &r5);
-        if (st == SD_OK) r->Information = len;
+        if (st == SD_OK) {
+            r->Information = len;
+            GsCmdRespShim(p, arg, va, len);
+        }
     } else {
         DbgPrint("goyasdio: CMD%u from function %u not supported\n", cmd, p->Fn);
         return STATUS_NOT_SUPPORTED;
