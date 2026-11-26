@@ -123,6 +123,25 @@ for /f "usebackq eol=; delims=" %%h in ("%~dp0redrv.done") do call :redrvid "%%h
 reg unload HKLM\GOYAREG >> "%OUT%" 2>&1
 :noredrv
 
+rem ---- pnpinst.flag: install driver packages from inside Windows RT, where pnputil works (DISM does not
+rem in this WinPE, and a PC may not load this image's hives either). .\pnpinst\ (goya-pnpinst.cmd,
+rem pnpinst.list, the packages and GoyaTestCert.cer) is copied to C:\goya\pnpinst and an HKLM RunOnce
+rem entry runs goya-pnpinst.cmd at the next logon; it leaves goyape\pnpinst-result.log on this card. ----
+if not exist "%~dp0pnpinst.flag" goto nopnpinst
+move /y "%~dp0pnpinst.flag" "%~dp0pnpinst.done" >nul
+set WIN=
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if not defined WIN if exist %%d:\Windows\System32\config\SOFTWARE if /i not "%%d:"=="%~d0" set WIN=%%d:
+echo --- pnpinst: stage .\pnpinst on %WIN% and set RunOnce >> "%OUT%"
+if not defined WIN (echo no Windows partition found >> "%OUT%" & goto nopnpinst)
+if not exist %WIN%\goya\pnpinst mkdir %WIN%\goya\pnpinst
+xcopy /y /q "%~dp0pnpinst\*" %WIN%\goya\pnpinst\ >> "%OUT%" 2>&1
+reg load HKLM\GOYASW %WIN%\Windows\System32\config\SOFTWARE >> "%OUT%" 2>&1
+if errorlevel 1 (echo SOFTWARE hive load failed >> "%OUT%" & goto nopnpinst)
+reg add "HKLM\GOYASW\Microsoft\Windows\CurrentVersion\RunOnce" /v GoyaPnpInst /t REG_SZ /d "cmd.exe /c C:\goya\pnpinst\goya-pnpinst.cmd" /f >> "%OUT%" 2>&1
+reg query "HKLM\GOYASW\Microsoft\Windows\CurrentVersion\RunOnce" >> "%OUT%" 2>&1
+reg unload HKLM\GOYASW >> "%OUT%" 2>&1
+:nopnpinst
+
 rem ---- setuplogs.flag: copy Windows Setup's logs from the Windows RT partition to .\setuplogs\ ----
 if not exist "%~dp0setuplogs.flag" goto nosetuplogs
 move /y "%~dp0setuplogs.flag" "%~dp0setuplogs.done" >nul
