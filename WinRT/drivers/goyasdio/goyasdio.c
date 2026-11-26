@@ -566,6 +566,23 @@ static VOID GsCmdRespShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
     type = (USHORT)(va[2] | (va[3] << 8));
     id = (USHORT)(va[4] | (va[5] << 8));
     res = (USHORT)(va[10] | (va[11] << 8));
+    if (type == 1 && id == 0x8003) {               /* GET_HW_SPEC response: the firmware's capabilities, in full */
+        ULONG n = (ULONG)(va[0] | (va[1] << 8)), o;
+        if (n > len) n = len;
+        if (n > 128) n = 128;
+        for (o = 0; o < n; o += 16) {
+            char hex[3 * 16 + 1];
+            static const char hd[] = "0123456789abcdef";
+            ULONG k, m = n - o < 16 ? n - o : 16;
+            for (k = 0; k < m; k++) {
+                hex[3 * k] = hd[va[o + k] >> 4];
+                hex[3 * k + 1] = hd[va[o + k] & 15];
+                hex[3 * k + 2] = ' ';
+            }
+            hex[3 * m] = 0;
+            DbgPrint("goyasdio: f%u HW_SPEC +%02x: %s\n", p->Fn, o, hex);
+        }
+    }
     if (type != 1 || !(id & 0x8000) || res != 2) return;
     for (i = 0; i < RTL_NUMBER_OF(gGsOptionalCmds); i++) {
         if ((id & 0x7FFF) == gGsOptionalCmds[i]) {
