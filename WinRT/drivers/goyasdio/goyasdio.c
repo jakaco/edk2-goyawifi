@@ -646,7 +646,8 @@ static VOID GsCmdRespShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
    The firmware has already decrypted the payload but its header copy keeps the Protected bit; that is cleared, or
    Windows takes the start of the payload for a CCMP header and drops every encrypted frame (no DHCP lease).
    goyawifi takes RxPD byte 17 for "arrived unencrypted" (its Exclude Unencrypted filter drops such data frames);
-   the 8777 has other data there (nonzero), so it is set from the Protected bit: 0 encrypted, 1 not.
+   the 8777 has other data there (nonzero), so it is set from the Protected bit: 0 encrypted, 1 not. Byte 16
+   (8797 flags, bits 2 and 3 read by MLAN) holds unrelated 8777 data too and is cleared.
    Aggregated reads hold several packets, each padded to the 256-byte block. */
 #define GS_RXPD_HDR 0x22                       /* 802.11 header copy in the 8777 RxPD */
 static volatile LONG gGsRxShimLog;
@@ -673,6 +674,7 @@ static VOID GsRxDataShim(PGS_PDO p, ULONG arg, PUCHAR va, ULONG len)
                 } else {                                               /* 802.3: LLC follows the length */
                     npo = po + 14 - hl; npl = pl - 14 + hl;
                 }
+                va[r + 16] = 0;                        /* 8797 RxPD flags (bits 2, 3 read by MLAN): none */
                 va[r + 17] = (h[1] & 0x40) ? 0 : 1;   /* 8797 RxPD byte 17: frame arrived unencrypted */
                 RtlMoveMemory(va + r + npo, h, hl);
                 va[r + npo + 1] &= ~0x40;              /* decrypted by the firmware: no Protected bit */
